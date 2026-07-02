@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Universal SpeedReader
-// @namespace    https://github.com/universal-speedreader
-// @version      1.2.0
+// @namespace    https://github.com/hubmey/tm_speedreader.git
+// @version      1.4.0
 // @description  RSVP/ORP Speedreader für nahezu jede textbasierte Webseite, mit synchronem Auto-Scroll des Originalcontainers.
 // @author       Universal SpeedReader Project
 // @match        *://*/*
@@ -76,6 +76,10 @@
     autoScroll: true,
     skipImageCaptions: false, // Bildunterschriften (figcaption/alt) beim Lesen überspringen
     skipCitations: false,     // Quellenangaben/Fußnoten (cite, .footnote) komplett auslassen
+    displayFontSize: 30,      // Schriftgröße (px) der Wortanzeige
+    minFontSize: 14,
+    maxFontSize: 72,
+    focusMode: 'off',         // 'off' | 'dim' | 'blur' | 'hide' – Behandlung von Elementen außerhalb des Containers
     speedFactors: {
       heading: 0.55,
       image: 0.30,
@@ -1094,11 +1098,15 @@
         font: 13px/1.4 system-ui, sans-serif; box-shadow: 0 4px 14px rgba(0,0,0,.35);
       }
 
+      /* Fest im Viewport verankert (nicht mehr im Container), damit die Toolbar beim
+         Auto-Scroll/Springen des Containers nicht mitwandert oder hin- und herspringt. */
       .${NS}-toolbar {
-        position: sticky; z-index: 2147483000;
+        position: fixed; z-index: 2147483000;
+        left: 50%; transform: translateX(-50%);
+        width: min(760px, 94vw);
         background: var(--usr-bg, #1f2937); color: var(--usr-fg, #f3f4f6);
         font: 13px/1.4 system-ui, -apple-system, sans-serif;
-        padding: 10px 14px; border-radius: 10px; margin: 8px 0;
+        padding: 10px 14px; border-radius: 10px;
         box-shadow: 0 4px 18px rgba(0,0,0,.25);
         display: flex; flex-direction: column; gap: 8px;
       }
@@ -1142,6 +1150,16 @@
       .${NS}-toggle { display: flex; align-items: center; gap: 4px; font-size: 12px; cursor: pointer; user-select: none; }
       .${NS}-stat { font-size: 11px; opacity: .85; white-space: nowrap; }
       .${NS}-spacer { flex: 1 1 auto; }
+      .${NS}-select {
+        background: rgba(255,255,255,.08); color: inherit; border: none; border-radius: 6px;
+        padding: 5px 8px; font-size: 12px; cursor: pointer;
+      }
+      .${NS}-toolbar.usr-theme-light .${NS}-select { background: rgba(0,0,0,.06); }
+
+      /* Fokusmodus: Elemente außerhalb des gewählten Containers werden gedimmt/verwischt/versteckt. */
+      .${NS}-focus-dim { opacity: .12 !important; transition: opacity .25s ease; }
+      .${NS}-focus-blur { filter: blur(6px) !important; opacity: .5 !important; transition: filter .25s ease, opacity .25s ease; }
+      .${NS}-focus-hide { visibility: hidden !important; }
 
       .${NS}-stats-modal {
         position: fixed; inset: 0; z-index: 2147483001;
@@ -1171,6 +1189,14 @@
         onclick: onClick,
       });
       document.body.appendChild(this.element);
+    }
+
+    hide() {
+      this.element.style.display = 'none';
+    }
+
+    show() {
+      this.element.style.display = 'flex';
     }
 
     dispose() {
@@ -1288,6 +1314,7 @@
 
       this.display = Utils.el('div', {
         class: `${NS}-display${s.get('orpFixedPoint') ? ' usr-orp-fixed' : ''}`,
+        style: `font-size: ${s.get('displayFontSize')}px;`,
       }, [
         this.refLine, this.wordBefore, this.wordFocus, this.wordAfter,
       ]);
@@ -1317,6 +1344,23 @@
         oninput: (e) => this.bus.emit('ui:wpm-set', { wpm: Number(e.target.value) }),
       });
 
+      this.statFontSize = Utils.el('span', { class: `${NS}-stat`, text: `${s.get('displayFontSize')}px` });
+      this.fontSizeSlider = Utils.el('input', {
+        class: `${NS}-slider`, type: 'range', min: s.get('minFontSize'), max: s.get('maxFontSize'), value: s.get('displayFontSize'),
+        oninput: (e) => this.bus.emit('ui:font-size-set', { size: Number(e.target.value) }),
+      });
+
+      this.focusModeSelect = Utils.el('select', {
+        class: `${NS}-select`, title: 'Fokusmodus: übrige Seite abdunkeln/verwischen/ausblenden',
+        onchange: (e) => this.bus.emit('ui:focus-mode-set', { mode: e.target.value }),
+      }, [
+        Utils.el('option', { value: 'off', text: 'Fokus: Aus' }),
+        Utils.el('option', { value: 'dim', text: 'Fokus: Abdunkeln' }),
+        Utils.el('option', { value: 'blur', text: 'Fokus: Verschwommen' }),
+        Utils.el('option', { value: 'hide', text: 'Fokus: Ausblenden' }),
+      ]);
+      this.focusModeSelect.value = s.get('focusMode');
+
       this.toggleOrp = this._makeToggle('ORP', 'orpEnabled', 'ui:toggle-orp');
       this.toggleOrpFixed = this._makeToggle('Fixpunkt', 'orpFixedPoint', 'ui:toggle-orp-fixed');
       this.toggleScroll = this._makeToggle('AutoScroll', 'autoScroll', 'ui:toggle-autoscroll');
@@ -1334,13 +1378,14 @@
       const controlsRow = Utils.el('div', { class: `${NS}-row` }, [
         this.btnPrevChapter, this.btnPrev, this.btnStart, this.btnStop, this.btnNext, this.btnNextChapter,
         Utils.el('span', { class: `${NS}-stat`, text: 'WPM' }), this.wpmSlider, this.statWpm,
+        Utils.el('span', { class: `${NS}-stat`, text: 'Schrift' }), this.fontSizeSlider, this.statFontSize,
         Utils.el('div', { class: `${NS}-spacer` }),
         this.togglePosition, this.btnClose,
       ]);
 
       const toggleRow = Utils.el('div', { class: `${NS}-row` }, [
         this.toggleOrp, this.toggleOrpFixed, this.toggleScroll, this.toggleAdaptive, this.togglePunct,
-        this.toggleCaptions, this.toggleCitations,
+        this.toggleCaptions, this.toggleCitations, this.focusModeSelect,
       ]);
 
       const statsRow = Utils.el('div', { class: `${NS}-row` }, [
@@ -1380,6 +1425,11 @@
       this.bus.on('settings:orp-fixed-changed', ({ value }) => {
         this.display.classList.toggle('usr-orp-fixed', value);
         this.toggleOrpFixed._input.checked = value;
+      });
+      this.bus.on('settings:font-size-changed', ({ size }) => {
+        this.display.style.fontSize = `${size}px`;
+        this.fontSizeSlider.value = size;
+        this.statFontSize.textContent = `${size}px`;
       });
     }
 
@@ -1527,6 +1577,57 @@
     }
   }
 
+  /**
+   * Fokusmodus: dimmt/verwischt/versteckt alle DOM-Elemente außerhalb des
+   * gewählten Lese-Containers, damit visuelle Ablenkung minimiert wird.
+   *
+   * Vorgehen: Ausgehend vom Container wird die Kette der Vorfahren bis zum
+   * <html>-Element gebildet. Für jede Ebene dieser Kette werden alle
+   * Geschwister-Elemente (die nicht selbst Teil der Kette sind) markiert.
+   * So bleibt einzig der Pfad zum Container unangetastet sichtbar.
+   */
+  class FocusModeController {
+    constructor() {
+      this._modifiedElements = [];
+      this._activeMode = 'off';
+    }
+
+    apply(container, mode) {
+      this.clear();
+      this._activeMode = mode;
+      if (!container || mode === 'off') return;
+
+      const chain = new Set();
+      let el = container;
+      while (el) {
+        chain.add(el);
+        if (el === document.documentElement) break;
+        el = el.parentElement;
+      }
+
+      for (const ancestor of chain) {
+        const parent = ancestor.parentElement;
+        if (!parent) continue;
+        for (const sibling of parent.children) {
+          if (sibling === ancestor || chain.has(sibling)) continue;
+          // Eigene UI-Elemente (FAB, Hinweise, Stats-Modal) sind body-Kinder außerhalb
+          // der Container-Kette und dürfen nicht mitgedimmt werden.
+          if (typeof sibling.className === 'string' && sibling.className.includes(NS)) continue;
+          sibling.classList.add(`${NS}-focus-${mode}`);
+          this._modifiedElements.push(sibling);
+        }
+      }
+    }
+
+    clear() {
+      for (const el of this._modifiedElements) {
+        el.classList.remove(`${NS}-focus-dim`, `${NS}-focus-blur`, `${NS}-focus-hide`);
+      }
+      this._modifiedElements = [];
+      this._activeMode = 'off';
+    }
+  }
+
   // ===========================================================================
   // 13. APP (ORCHESTRIERUNG / BOOTSTRAP)
   // ===========================================================================
@@ -1545,6 +1646,7 @@
       this.scrollEngine = new ScrollEngine(this.settings);
       this.domParser = new DomParser(this.bus, this.settings);
       this.keyboard = new KeyboardController(this.bus, this.settings);
+      this.focusMode = new FocusModeController();
 
       this.container = null;
       this.toolbar = null;
@@ -1565,7 +1667,9 @@
     // --- Auswahlmodus -------------------------------------------------------
 
     _enterSelectionMode() {
-      if (this.selectionOverlay) return;
+      // Pro Seite darf immer nur eine Reader-Session aktiv sein (verhindert doppelte
+      // Toolbars/Sessions, die sich gegenseitig beim Auto-Scroll stören würden).
+      if (this.container || this.selectionOverlay) return;
       this.selectionOverlay = new SelectionOverlay(
         (container) => { this.selectionOverlay = null; this._startSession(container); },
         () => { this.selectionOverlay = null; }
@@ -1587,10 +1691,12 @@
         this.scrollEngine.attach(container);
 
         this.toolbar = new Toolbar(this.bus, this.settings);
-        this._mountToolbar(container);
+        this._mountToolbar();
         this.keyboard.enable();
         this._observeMutations(container);
         this._restoreLastPosition();
+        this.focusMode.apply(container, this.settings.get('focusMode'));
+        this.floatingButton?.hide();
 
         this.bus.emit('reader:token', this._currentTokenSnapshot());
       } catch (err) {
@@ -1613,10 +1719,10 @@
       };
     }
 
-    _mountToolbar(container) {
-      const position = this.settings.get('toolbarPosition');
-      if (position === 'bottom') container.appendChild(this.toolbar.element);
-      else container.insertBefore(this.toolbar.element, container.firstChild);
+    _mountToolbar() {
+      // Fest im Viewport (position: fixed via CSS) statt im Container verankert –
+      // die Container-Referenz wird nicht mehr benötigt, top/bottom steuert nur noch die CSS-Klasse.
+      if (!this.toolbar.element.isConnected) document.body.appendChild(this.toolbar.element);
     }
 
     _observeMutations(container) {
@@ -1668,6 +1774,8 @@
       this.toolbar?.dispose();
       this.toolbar = null;
       this.container = null;
+      this.focusMode.clear();
+      this.floatingButton?.show();
     }
 
     // --- Bus-Handler ----------------------------------------------------------
@@ -1696,6 +1804,16 @@
       this.bus.on('ui:toggle-captions', ({ value }) => { this.settings.set('skipImageCaptions', value); this._reparseContainer(); });
       this.bus.on('ui:toggle-citations', ({ value }) => { this.settings.set('skipCitations', value); this._reparseContainer(); });
 
+      this.bus.on('ui:font-size-set', ({ size }) => {
+        this.settings.set('displayFontSize', size);
+        this.bus.emit('settings:font-size-changed', { size });
+      });
+
+      this.bus.on('ui:focus-mode-set', ({ mode }) => {
+        this.settings.set('focusMode', mode);
+        if (this.container) this.focusMode.apply(this.container, mode);
+      });
+
       this.bus.on('ui:toggle-position', () => {
         const current = this.settings.get('toolbarPosition');
         const next = current === 'top' ? 'bottom' : 'top';
@@ -1703,7 +1821,7 @@
         if (this.toolbar && this.container) {
           this.toolbar.element.classList.remove('usr-pos-top', 'usr-pos-bottom');
           this.toolbar.element.classList.add(next === 'top' ? 'usr-pos-top' : 'usr-pos-bottom');
-          this._mountToolbar(this.container);
+          this._mountToolbar();
         }
       });
 
@@ -1731,6 +1849,11 @@
   // ===========================================================================
 
   function bootstrap() {
+    // Verhindert doppelte Initialisierung (z. B. Mehrfach-Injektion durch den
+    // Userscript-Manager oder erneutes Ausführen bei SPA-Navigation).
+    if (window[`__${NS}_loaded`]) return;
+    window[`__${NS}_loaded`] = true;
+
     try {
       const app = new App();
       app.init();
