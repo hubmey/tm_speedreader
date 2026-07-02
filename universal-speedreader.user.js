@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Universal SpeedReader
 // @namespace    https://github.com/hubmey/tm_speedreader.git
-// @version      1.6.1
+// @version      1.7.0
 // @description  RSVP/ORP Speedreader für nahezu jede textbasierte Webseite, mit synchronem Auto-Scroll des Originalcontainers.
 // @author       Hubertus Meyer
 // @match        *://*/*
@@ -78,6 +78,7 @@
     autoScroll: true,
     skipImageCaptions: false, // Bildunterschriften (figcaption/alt) beim Lesen überspringen
     skipCitations: false,     // Quellenangaben/Fußnoten (cite, .footnote) komplett auslassen
+    skipTables: false,        // Tabelleninhalt nicht vorlesen, nur kurz "[Tabelle]" als Pausenplatzhalter anzeigen
     displayFontSize: 30,      // Schriftgröße (px) der Wortanzeige
     minFontSize: 14,
     maxFontSize: 72,
@@ -656,7 +657,11 @@
           return this._makeBlock(element, BlockType.SVG, factors.image,
             element.getAttribute('aria-label') || element.querySelector?.('title')?.textContent || 'Grafik');
         case BlockType.TABLE:
-          return this._makeBlock(element, BlockType.TABLE, factors.table);
+          // Bei aktiviertem Überspringen wird statt des vollen Zellinhalts nur ein
+          // kurzer Platzhalter angezeigt – dank Tabellen-Geschwindigkeitsfaktor lang
+          // genug stehend, um kurz zu pausieren, ohne die ganze Tabelle vorzulesen.
+          return this._makeBlock(element, BlockType.TABLE, factors.table,
+            this.settings.get('skipTables') ? '[Tabelle]' : undefined);
         case BlockType.CODE_BLOCK:
           return this._makeBlock(element, BlockType.CODE_BLOCK, factors.code);
         case BlockType.INLINE_CODE:
@@ -1470,6 +1475,7 @@
       this.togglePunct = this._makeToggle('Satzz.-Pausen', 'punctuationPauses', 'ui:toggle-punct');
       this.toggleCaptions = this._makeToggle('Bildunterschr. überspr.', 'skipImageCaptions', 'ui:toggle-captions');
       this.toggleCitations = this._makeToggle('Quellen überspr.', 'skipCitations', 'ui:toggle-citations');
+      this.toggleTables = this._makeToggle('Tabellen überspr.', 'skipTables', 'ui:toggle-tables');
       this.toggleSourceHighlight = this._makeToggle('Quelltext markieren', 'highlightSourceWord', 'ui:toggle-source-highlight');
 
       this.togglePosition = Utils.el('button', {
@@ -1488,7 +1494,7 @@
 
       const toggleRow = Utils.el('div', { class: `${NS}-row` }, [
         this.toggleOrp, this.toggleOrpFixed, this.toggleScroll, this.toggleAdaptive, this.togglePunct,
-        this.toggleCaptions, this.toggleCitations, this.toggleSourceHighlight, this.focusModeSelect,
+        this.toggleCaptions, this.toggleCitations, this.toggleTables, this.toggleSourceHighlight, this.focusModeSelect,
       ]);
 
       const statsRow = Utils.el('div', { class: `${NS}-row` }, [
@@ -1957,6 +1963,7 @@
 
       this.bus.on('ui:toggle-captions', ({ value }) => { this.settings.set('skipImageCaptions', value); this._reparseContainer(); });
       this.bus.on('ui:toggle-citations', ({ value }) => { this.settings.set('skipCitations', value); this._reparseContainer(); });
+      this.bus.on('ui:toggle-tables', ({ value }) => { this.settings.set('skipTables', value); this._reparseContainer(); });
 
       this.bus.on('ui:toggle-source-highlight', ({ value }) => {
         this.settings.set('highlightSourceWord', value);
