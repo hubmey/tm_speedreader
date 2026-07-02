@@ -11,6 +11,8 @@
 // @grant        GM_registerMenuCommand
 // @run-at       document-idle
 // @noframes
+// @updateURL    https://raw.githubusercontent.com/hubmey/tm_speedreader/main/universal-speedreader.user.js
+// @downloadURL  https://raw.githubusercontent.com/hubmey/tm_speedreader/main/universal-speedreader.user.js
 // ==/UserScript==
 
 /**
