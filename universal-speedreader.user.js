@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Universal SpeedReader
 // @namespace    https://github.com/hubmey/tm_speedreader.git
-// @version      1.7.0
+// @version      1.8.0
 // @description  RSVP/ORP Speedreader für nahezu jede textbasierte Webseite, mit synchronem Auto-Scroll des Originalcontainers.
 // @author       Hubertus Meyer
 // @match        *://*/*
@@ -79,6 +79,10 @@
     skipImageCaptions: false, // Bildunterschriften (figcaption/alt) beim Lesen überspringen
     skipCitations: false,     // Quellenangaben/Fußnoten (cite, .footnote) komplett auslassen
     skipTables: false,        // Tabelleninhalt nicht vorlesen, nur kurz "[Tabelle]" als Pausenplatzhalter anzeigen
+    placeholderPauseMs: 1000, // Mindest-Anzeigedauer für Platzhalter (übersprungene Tabellen/Bilder ohne Text)
+    minPlaceholderPauseMs: 300,
+    maxPlaceholderPauseMs: 3000,
+    clickSoundEnabled: false, // kurzer Klickton bei jedem neuen Wort
     displayFontSize: 30,      // Schriftgröße (px) der Wortanzeige
     minFontSize: 14,
     maxFontSize: 72,
@@ -454,7 +458,7 @@
    * gecacht, um Reflows zu minimieren).
    */
   class Block {
-    constructor({ element, type, text, speedFactor, highlightable = false }) {
+    constructor({ element, type, text, speedFactor, highlightable = false, isPlaceholder = false }) {
       this.id = Utils.uuid();
       this.element = element;
       this.type = type;
@@ -464,6 +468,7 @@
       this.speedFactor = speedFactor;
       this.visible = true;
       this.highlightable = highlightable;
+      this.isPlaceholder = isPlaceholder;
       this._cachedRect = null;
       this._wordRanges = null;
     }
@@ -644,24 +649,28 @@
         case BlockType.IMAGE: {
           const figcaption = element.querySelector?.('figcaption');
           const captionText = figcaption ? Utils.visibleTextContent(figcaption) : '';
-          return this._makeBlock(element, BlockType.IMAGE, factors.image,
-            this.settings.get('skipImageCaptions')
-              ? '[Bild]'
-              : (element.getAttribute('alt') || captionText || 'Bild'));
+          const skipCaptions = this.settings.get('skipImageCaptions');
+          const altOrCaption = element.getAttribute('alt') || captionText;
+          const overrideText = skipCaptions ? '[Bild]' : (altOrCaption || 'Bild');
+          // Platzhalter (kein echter Alt-/Caption-Text bzw. bewusst übersprungen) bekommt
+          // eine erzwungene Mindestpause; echte Beschriftungen werden normal vorgelesen.
+          return this._makeBlock(element, BlockType.IMAGE, factors.image, overrideText, skipCaptions || !altOrCaption);
         }
         case BlockType.VIDEO:
-          return this._makeBlock(element, BlockType.VIDEO, factors.image, 'Video');
+          return this._makeBlock(element, BlockType.VIDEO, factors.image, 'Video', true);
         case BlockType.CANVAS:
-          return this._makeBlock(element, BlockType.CANVAS, factors.image, 'Canvas-Grafik');
-        case BlockType.SVG:
-          return this._makeBlock(element, BlockType.SVG, factors.image,
-            element.getAttribute('aria-label') || element.querySelector?.('title')?.textContent || 'Grafik');
-        case BlockType.TABLE:
+          return this._makeBlock(element, BlockType.CANVAS, factors.image, 'Canvas-Grafik', true);
+        case BlockType.SVG: {
+          const label = element.getAttribute('aria-label') || element.querySelector?.('title')?.textContent;
+          return this._makeBlock(element, BlockType.SVG, factors.image, label || 'Grafik', !label);
+        }
+        case BlockType.TABLE: {
           // Bei aktiviertem Überspringen wird statt des vollen Zellinhalts nur ein
-          // kurzer Platzhalter angezeigt – dank Tabellen-Geschwindigkeitsfaktor lang
-          // genug stehend, um kurz zu pausieren, ohne die ganze Tabelle vorzulesen.
-          return this._makeBlock(element, BlockType.TABLE, factors.table,
-            this.settings.get('skipTables') ? '[Tabelle]' : undefined);
+          // kurzer Platzhalter angezeigt – mit erzwungener Mindestpause (statt nur dem
+          // Tabellen-Geschwindigkeitsfaktor), damit klar spürbar kurz pausiert wird.
+          const skip = this.settings.get('skipTables');
+          return this._makeBlock(element, BlockType.TABLE, factors.table, skip ? '[Tabelle]' : undefined, skip);
+        }
         case BlockType.CODE_BLOCK:
           return this._makeBlock(element, BlockType.CODE_BLOCK, factors.code);
         case BlockType.INLINE_CODE:
@@ -701,7 +710,7 @@
       return /footnote|fn-|fnref/.test(id) || /footnote/.test(cls) || element.getAttribute('role') === 'doc-footnote';
     }
 
-    _makeBlock(element, type, speedFactor, overrideText) {
+    _makeBlock(element, type, speedFactor, overrideText, isPlaceholder = false) {
       // Nur wenn der Anzeigetext 1:1 dem Element-Textinhalt entspricht (kein
       // überschriebener/synthetischer Text) kann später im Quelltext hervorgehoben werden.
       const highlightable = overrideText === undefined;
@@ -709,11 +718,11 @@
       if (!text || !text.trim()) {
         // Bilder ohne Alt-Text erhalten einen Platzhalter, damit sie als Pause im Lesefluss erscheinen.
         if (type === BlockType.IMAGE || type === BlockType.VIDEO || type === BlockType.CANVAS || type === BlockType.SVG) {
-          return new Block({ element, type, text: '[Bild]', speedFactor, highlightable: false });
+          return new Block({ element, type, text: '[Bild]', speedFactor, highlightable: false, isPlaceholder: true });
         }
         return null;
       }
-      return new Block({ element, type, text, speedFactor, highlightable });
+      return new Block({ element, type, text, speedFactor, highlightable, isPlaceholder });
     }
 
     /** Aktualisiert Block.visible via IntersectionObserver statt teurer Scroll-Handler. */
@@ -782,7 +791,56 @@
         ms += extra + overflow * 9;
       }
 
-      return Utils.clamp(ms, 40, 4000);
+      // Platzhalter (übersprungene Tabellen/Bilder ohne Beschriftung) sollen lange
+      // genug stehen bleiben, um bewusst kurz zu pausieren, unabhängig vom Geschwindigkeitsfaktor.
+      if (block?.isPlaceholder) {
+        ms = Math.max(ms, s.get('placeholderPauseMs'));
+      }
+
+      return Utils.clamp(ms, 40, 5000);
+    }
+  }
+
+  /**
+   * Erzeugt einen sehr kurzen, dezenten Klickton bei jedem neuen Wort – rein
+   * synthetisch via Web Audio API (kein Audio-Asset nötig). Der AudioContext
+   * wird lazy beim ersten Ton erzeugt (Browser verlangen eine Nutzergeste,
+   * die durch den vorherigen Start-Klick bereits vorliegt).
+   */
+  class SoundEngine {
+    constructor(settings) {
+      this.settings = settings;
+      this._ctx = null;
+    }
+
+    _ensureContext() {
+      if (!this._ctx) {
+        const AudioCtx = window.AudioContext || window.webkitAudioContext;
+        if (!AudioCtx) return null;
+        this._ctx = new AudioCtx();
+      }
+      if (this._ctx.state === 'suspended') this._ctx.resume();
+      return this._ctx;
+    }
+
+    playTick() {
+      if (!this.settings.get('clickSoundEnabled')) return;
+      const ctx = this._ensureContext();
+      if (!ctx) return;
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = 'square';
+      osc.frequency.value = 1100;
+      gain.gain.setValueAtTime(0.05, ctx.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + 0.025);
+      osc.connect(gain).connect(ctx.destination);
+      osc.start();
+      osc.stop(ctx.currentTime + 0.03);
+    }
+
+    dispose() {
+      this._ctx?.close();
+      this._ctx = null;
     }
   }
 
@@ -1457,6 +1515,15 @@
         oninput: (e) => this.bus.emit('ui:font-size-set', { size: Number(e.target.value) }),
       });
 
+      this.statPlaceholderPause = Utils.el('span', { class: `${NS}-stat`, text: `${(s.get('placeholderPauseMs') / 1000).toFixed(1)}s` });
+      this.placeholderPauseSlider = Utils.el('input', {
+        class: `${NS}-slider`, type: 'range',
+        min: s.get('minPlaceholderPauseMs'), max: s.get('maxPlaceholderPauseMs'), step: 100,
+        value: s.get('placeholderPauseMs'),
+        title: 'Mindestpause bei übersprungenen Tabellen/Bildern',
+        oninput: (e) => this.bus.emit('ui:placeholder-pause-set', { ms: Number(e.target.value) }),
+      });
+
       this.focusModeSelect = Utils.el('select', {
         class: `${NS}-select`, title: 'Fokusmodus: übrige Seite abdunkeln/verwischen/ausblenden',
         onchange: (e) => this.bus.emit('ui:focus-mode-set', { mode: e.target.value }),
@@ -1477,6 +1544,7 @@
       this.toggleCitations = this._makeToggle('Quellen überspr.', 'skipCitations', 'ui:toggle-citations');
       this.toggleTables = this._makeToggle('Tabellen überspr.', 'skipTables', 'ui:toggle-tables');
       this.toggleSourceHighlight = this._makeToggle('Quelltext markieren', 'highlightSourceWord', 'ui:toggle-source-highlight');
+      this.toggleClickSound = this._makeToggle('Klickton', 'clickSoundEnabled', 'ui:toggle-click-sound');
 
       this.togglePosition = Utils.el('button', {
         class: `${NS}-btn`, text: s.get('toolbarPosition') === 'top' ? '⬇ Position' : '⬆ Position',
@@ -1488,13 +1556,15 @@
         this.btnPrevChapter, this.btnPrev, this.btnStart, this.btnStop, this.btnNext, this.btnNextChapter,
         Utils.el('span', { class: `${NS}-stat`, text: 'WPM' }), this.wpmSlider, this.statWpm,
         Utils.el('span', { class: `${NS}-stat`, text: 'Schrift' }), this.fontSizeSlider, this.statFontSize,
+        Utils.el('span', { class: `${NS}-stat`, text: 'Platzh.-Pause' }), this.placeholderPauseSlider, this.statPlaceholderPause,
         Utils.el('div', { class: `${NS}-spacer` }),
         this.togglePosition, this.btnClose,
       ]);
 
       const toggleRow = Utils.el('div', { class: `${NS}-row` }, [
         this.toggleOrp, this.toggleOrpFixed, this.toggleScroll, this.toggleAdaptive, this.togglePunct,
-        this.toggleCaptions, this.toggleCitations, this.toggleTables, this.toggleSourceHighlight, this.focusModeSelect,
+        this.toggleCaptions, this.toggleCitations, this.toggleTables, this.toggleSourceHighlight,
+        this.toggleClickSound, this.focusModeSelect,
       ]);
 
       const statsRow = Utils.el('div', { class: `${NS}-row` }, [
@@ -1539,6 +1609,10 @@
         this.display.style.fontSize = `${size}px`;
         this.fontSizeSlider.value = size;
         this.statFontSize.textContent = `${size}px`;
+      });
+      this.bus.on('settings:placeholder-pause-changed', ({ ms }) => {
+        this.placeholderPauseSlider.value = ms;
+        this.statPlaceholderPause.textContent = `${(ms / 1000).toFixed(1)}s`;
       });
     }
 
@@ -1804,6 +1878,7 @@
       this.keyboard = new KeyboardController(this.bus, this.settings);
       this.focusMode = new FocusModeController();
       this.sourceHighlighter = new SourceHighlighter();
+      this.soundEngine = new SoundEngine(this.settings);
 
       this.container = null;
       this.toolbar = null;
@@ -1975,6 +2050,13 @@
         this.bus.emit('settings:font-size-changed', { size });
       });
 
+      this.bus.on('ui:placeholder-pause-set', ({ ms }) => {
+        this.settings.set('placeholderPauseMs', ms);
+        this.bus.emit('settings:placeholder-pause-changed', { ms });
+      });
+
+      this.bus.on('ui:toggle-click-sound', ({ value }) => this.settings.set('clickSoundEnabled', value));
+
       this.bus.on('ui:focus-mode-set', ({ mode }) => {
         this.settings.set('focusMode', mode);
         if (this.container) this.focusMode.apply(this.container, mode);
@@ -2006,6 +2088,7 @@
         } else {
           this.sourceHighlighter.clear();
         }
+        this.soundEngine.playTick();
       });
 
       this.bus.on('reader:finished', (stats) => {
