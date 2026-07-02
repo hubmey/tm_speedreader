@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Universal SpeedReader
 // @namespace    https://github.com/hubmey/tm_speedreader.git
-// @version      1.6.0
+// @version      1.6.1
 // @description  RSVP/ORP Speedreader für nahezu jede textbasierte Webseite, mit synchronem Auto-Scroll des Originalcontainers.
 // @author       Hubertus Meyer
 // @match        *://*/*
@@ -198,6 +198,30 @@
       }
       const rect = el.getBoundingClientRect();
       return rect.width > 0 && rect.height > 0;
+    }
+
+    /**
+     * Wie element.textContent, aber Text unter unsichtbaren Nachfahren
+     * (verschachteltes display:none/visibility:hidden, z. B. ein <span
+     * style="display:none"> innerhalb eines ansonsten sichtbaren <p>) wird
+     * ausgeschlossen. isElementVisible() prüft dank getBoundingClientRect()
+     * automatisch die gesamte Vorfahrenkette (ein von einem unsichtbaren
+     * Ahnen "erdrückter" Knoten hat immer eine 0x0-Rect), daher genügt die
+     * Prüfung des direkten Textknoten-Elternteils.
+     */
+    static visibleTextContent(element) {
+      let text = '';
+      const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT, {
+        acceptNode: (node) => {
+          const parent = node.parentElement;
+          if (!parent) return NodeFilter.FILTER_REJECT;
+          if (parent.tagName === 'SCRIPT' || parent.tagName === 'STYLE') return NodeFilter.FILTER_REJECT;
+          return Utils.isElementVisible(parent) ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_REJECT;
+        },
+      });
+      let node;
+      while ((node = walker.nextNode())) text += node.nodeValue;
+      return text;
     }
 
     /** Erstellt ein DOM-Element mit Attributen/Kindern in einem Aufruf (kein Framework nötig). */
@@ -460,9 +484,13 @@
 
       const walker = document.createTreeWalker(this.element, NodeFilter.SHOW_TEXT, {
         acceptNode: (node) => {
-          const parentTag = node.parentElement?.tagName;
-          if (parentTag === 'SCRIPT' || parentTag === 'STYLE') return NodeFilter.FILTER_REJECT;
-          return NodeFilter.FILTER_ACCEPT;
+          const parent = node.parentElement;
+          if (!parent) return NodeFilter.FILTER_REJECT;
+          if (parent.tagName === 'SCRIPT' || parent.tagName === 'STYLE') return NodeFilter.FILTER_REJECT;
+          // Muss exakt denselben Filter wie Utils.visibleTextContent() anwenden,
+          // sonst driften Ranges und Token-Liste auseinander (Wörter unter
+          // verschachtelten unsichtbaren Nachfahren dürfen hier nicht auftauchen).
+          return Utils.isElementVisible(parent) ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_REJECT;
         },
       });
 
@@ -605,18 +633,21 @@
       // MathJax / KaTeX
       if (element.classList?.contains('katex') || element.tagName === 'MJX-CONTAINER' ||
           element.classList?.contains('MathJax')) {
-        return this._makeBlock(element, BlockType.MATH, factors.formula, element.textContent || element.getAttribute('aria-label') || 'Formel');
+        return this._makeBlock(element, BlockType.MATH, factors.formula, Utils.visibleTextContent(element) || element.getAttribute('aria-label') || 'Formel');
       }
 
       const mapped = DomParser.BLOCK_TAG_MAP[element.tagName];
       if (!mapped) return null;
 
       switch (mapped) {
-        case BlockType.IMAGE:
+        case BlockType.IMAGE: {
+          const figcaption = element.querySelector?.('figcaption');
+          const captionText = figcaption ? Utils.visibleTextContent(figcaption) : '';
           return this._makeBlock(element, BlockType.IMAGE, factors.image,
             this.settings.get('skipImageCaptions')
               ? '[Bild]'
-              : (element.getAttribute('alt') || element.querySelector?.('figcaption')?.textContent || 'Bild'));
+              : (element.getAttribute('alt') || captionText || 'Bild'));
+        }
         case BlockType.VIDEO:
           return this._makeBlock(element, BlockType.VIDEO, factors.image, 'Video');
         case BlockType.CANVAS:
@@ -637,10 +668,15 @@
         case BlockType.CITATION:
           if (this.settings.get('skipCitations')) return null;
           return this._makeBlock(element, BlockType.CITATION, factors.footnote);
-        case BlockType.DETAILS:
-          return this._makeBlock(element, BlockType.DETAILS, factors.list,
-            element.querySelector('summary')?.textContent + '. ' +
-            Array.from(element.childNodes).filter((n) => n.nodeName !== 'SUMMARY').map((n) => n.textContent).join(' '));
+        case BlockType.DETAILS: {
+          const summary = element.querySelector('summary');
+          const summaryText = summary ? Utils.visibleTextContent(summary) : '';
+          const bodyText = Array.from(element.childNodes)
+            .filter((n) => n.nodeName !== 'SUMMARY')
+            .map((n) => (n.nodeType === Node.ELEMENT_NODE ? Utils.visibleTextContent(n) : n.textContent))
+            .join(' ');
+          return this._makeBlock(element, BlockType.DETAILS, factors.list, `${summaryText}. ${bodyText}`);
+        }
         case BlockType.LIST:
           return this._makeBlock(element, BlockType.LIST, factors.list);
         case BlockType.HEADING:
@@ -664,7 +700,7 @@
       // Nur wenn der Anzeigetext 1:1 dem Element-Textinhalt entspricht (kein
       // überschriebener/synthetischer Text) kann später im Quelltext hervorgehoben werden.
       const highlightable = overrideText === undefined;
-      const text = overrideText ?? (element.getAttribute?.('alt') || element.textContent || '');
+      const text = overrideText ?? (element.getAttribute?.('alt') || Utils.visibleTextContent(element) || '');
       if (!text || !text.trim()) {
         // Bilder ohne Alt-Text erhalten einen Platzhalter, damit sie als Pause im Lesefluss erscheinen.
         if (type === BlockType.IMAGE || type === BlockType.VIDEO || type === BlockType.CANVAS || type === BlockType.SVG) {
