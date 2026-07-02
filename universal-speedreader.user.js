@@ -3,7 +3,7 @@
 // @namespace    https://github.com/hubmey/tm_speedreader.git
 // @version      1.4.0
 // @description  RSVP/ORP Speedreader für nahezu jede textbasierte Webseite, mit synchronem Auto-Scroll des Originalcontainers.
-// @author       Universal SpeedReader Project
+// @author       Hubertus Meyer
 // @match        *://*/*
 // @grant        GM_getValue
 // @grant        GM_setValue
