@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Universal SpeedReader
 // @namespace    https://github.com/hubmey/tm_speedreader.git
-// @version      1.4.0
+// @version      1.6.0
 // @description  RSVP/ORP Speedreader für nahezu jede textbasierte Webseite, mit synchronem Auto-Scroll des Originalcontainers.
 // @author       Hubertus Meyer
 // @match        *://*/*
@@ -82,6 +82,7 @@
     minFontSize: 14,
     maxFontSize: 72,
     focusMode: 'off',         // 'off' | 'dim' | 'blur' | 'hide' – Behandlung von Elementen außerhalb des Containers
+    highlightSourceWord: true, // aktuelles Wort dezent im Original-Quelltext hervorheben
     speedFactors: {
       heading: 0.55,
       image: 0.30,
@@ -99,7 +100,7 @@
       soft: 90,      // ,
     },
     longWordThreshold: 9,
-    longWordExtraMs: 40,
+    longWordExtraMs: 65,
     numberExtraMs: 60,
     hotkeys: {
       togglePause: 'Space',
@@ -428,7 +429,7 @@
    * gecacht, um Reflows zu minimieren).
    */
   class Block {
-    constructor({ element, type, text, speedFactor }) {
+    constructor({ element, type, text, speedFactor, highlightable = false }) {
       this.id = Utils.uuid();
       this.element = element;
       this.type = type;
@@ -437,7 +438,59 @@
       this.wordCount = this.tokens.length;
       this.speedFactor = speedFactor;
       this.visible = true;
+      this.highlightable = highlightable;
       this._cachedRect = null;
+      this._wordRanges = null;
+    }
+
+    /**
+     * Liefert je Token eine DOM-Range, die exakt das entsprechende Wort im
+     * Original-Text abdeckt (für die Live-Hervorhebung im Quelltext).
+     * Nur für Blöcke möglich, deren Anzeigetext 1:1 aus element.textContent
+     * stammt (kein synthetischer/überschriebener Text wie bei Bild-Alt-Texten).
+     * Lazy berechnet und gecacht, da ein TreeWalker-Durchlauf nötig ist.
+     */
+    getWordRanges() {
+      if (this._wordRanges) return this._wordRanges;
+      const ranges = [];
+      if (!this.highlightable) {
+        this._wordRanges = ranges;
+        return ranges;
+      }
+
+      const walker = document.createTreeWalker(this.element, NodeFilter.SHOW_TEXT, {
+        acceptNode: (node) => {
+          const parentTag = node.parentElement?.tagName;
+          if (parentTag === 'SCRIPT' || parentTag === 'STYLE') return NodeFilter.FILTER_REJECT;
+          return NodeFilter.FILTER_ACCEPT;
+        },
+      });
+
+      let currentStart = null;
+      let lastNode = null;
+      const flush = (endNode, endOffset) => {
+        if (currentStart) ranges.push({ startNode: currentStart.node, startOffset: currentStart.offset, endNode, endOffset });
+        currentStart = null;
+      };
+
+      let node;
+      while ((node = walker.nextNode())) {
+        lastNode = node;
+        const text = node.nodeValue.replace(/ /g, ' ');
+        for (let i = 0; i < text.length; i++) {
+          if (/\s/.test(text[i])) {
+            flush(node, i);
+          } else if (currentStart === null) {
+            currentStart = { node, offset: i };
+          }
+        }
+      }
+      if (lastNode) flush(lastNode, lastNode.nodeValue.length);
+
+      // Sicherheitsnetz: bei Diskrepanz zur Tokenliste (z. B. exotische
+      // Whitespace-Sonderfälle) lieber keine Hervorhebung als eine falsche.
+      this._wordRanges = ranges.length === this.tokens.length ? ranges : [];
+      return this._wordRanges;
     }
 
     /** Liefert eine gecachte BoundingRect, invalidiert via invalidateLayout(). */
@@ -512,6 +565,11 @@
         acceptNode: (node) => {
           if (DomParser.SKIP_TAGS.has(node.tagName)) return NodeFilter.FILTER_REJECT;
           if (node.closest?.(`.${NS}-ui`)) return NodeFilter.FILTER_REJECT;
+          // Von der Seite selbst ausgeblendete Bereiche (display:none, visibility:hidden,
+          // zusammengeklappte Tabs/Akkordeons, opacity:0, 0x0-Layout …) komplett überspringen –
+          // inkl. Nachfahren, sonst würde unsichtbarer Text mitgelesen/mitgezählt.
+          // <img> ist ausgenommen, da Lazy-Load-Bilder vor dem Laden oft (noch) unsichtbar sind.
+          if (node.tagName !== 'IMG' && !Utils.isElementVisible(node)) return NodeFilter.FILTER_REJECT;
           return NodeFilter.FILTER_ACCEPT;
         },
       });
@@ -538,10 +596,6 @@
     }
 
     _classify(element, factors) {
-      if (!Utils.isElementVisible(element) && element.tagName !== 'IMG') {
-        // Bilder können vor Lazy-Load unsichtbar sein, dennoch als Block zählen.
-      }
-
       // Footnote-Erkennung: typische Marker/Attribute (role, id-Muster, .footnote-Klassen).
       if (this._isFootnote(element)) {
         if (this.settings.get('skipCitations')) return null;
@@ -607,15 +661,18 @@
     }
 
     _makeBlock(element, type, speedFactor, overrideText) {
+      // Nur wenn der Anzeigetext 1:1 dem Element-Textinhalt entspricht (kein
+      // überschriebener/synthetischer Text) kann später im Quelltext hervorgehoben werden.
+      const highlightable = overrideText === undefined;
       const text = overrideText ?? (element.getAttribute?.('alt') || element.textContent || '');
       if (!text || !text.trim()) {
         // Bilder ohne Alt-Text erhalten einen Platzhalter, damit sie als Pause im Lesefluss erscheinen.
         if (type === BlockType.IMAGE || type === BlockType.VIDEO || type === BlockType.CANVAS || type === BlockType.SVG) {
-          return new Block({ element, type, text: '[Bild]', speedFactor });
+          return new Block({ element, type, text: '[Bild]', speedFactor, highlightable: false });
         }
         return null;
       }
-      return new Block({ element, type, text, speedFactor });
+      return new Block({ element, type, text, speedFactor, highlightable });
     }
 
     /** Aktualisiert Block.visible via IntersectionObserver statt teurer Scroll-Handler. */
@@ -671,15 +728,17 @@
         ms += pauses[token.punctuation] || 0;
       }
 
-      if (token.isNumber) {
+      // Zahlen/lange Wörter länger anzeigen gehört inhaltlich zur adaptiven
+      // Geschwindigkeit (siehe Lastenheft) – daher an denselben Schalter gekoppelt.
+      if (s.get('adaptiveSpeed') && token.isNumber) {
         ms += s.get('numberExtraMs');
       }
 
       const longThreshold = s.get('longWordThreshold');
-      if (token.letterCount >= longThreshold) {
+      if (s.get('adaptiveSpeed') && token.letterCount >= longThreshold) {
         const extra = s.get('longWordExtraMs');
         const overflow = token.letterCount - longThreshold;
-        ms += extra + overflow * 6;
+        ms += extra + overflow * 9;
       }
 
       return Utils.clamp(ms, 40, 4000);
@@ -880,9 +939,9 @@
         if (block.type === BlockType.HEADING) {
           this.chapters.push({ title: block.tokens.map((t) => t.text).join(' '), tokenIndex: this.stream.length });
         }
-        for (const token of block.tokens) {
-          this.stream.push({ token, block });
-        }
+        block.tokens.forEach((token, localIndex) => {
+          this.stream.push({ token, block, localIndex });
+        });
       }
       this.index = 0;
       this.bus.emit('reader:loaded', { totalWords: this.stream.length, chapters: this.chapters });
@@ -1059,6 +1118,7 @@
       this.bus.emit('reader:token', {
         token: entry.token,
         block: entry.block,
+        localIndex: entry.localIndex,
         index: this.index,
         total: this.stream.length,
         progress: this.stream.length ? this.index / this.stream.length : 0,
@@ -1162,6 +1222,10 @@
       .${NS}-focus-dim { opacity: .12 !important; transition: opacity .25s ease; }
       .${NS}-focus-blur { filter: blur(6px) !important; opacity: .5 !important; transition: filter .25s ease, opacity .25s ease; }
       .${NS}-focus-hide { visibility: hidden !important; }
+
+      /* Sehr dezente Rosa-Hervorhebung des aktuell vorgelesenen Worts im Original-Quelltext.
+         Nutzt die CSS Custom Highlight API (keine DOM-Mutation, kein MutationObserver-Trigger). */
+      ::highlight(${NS}-current-word) { background-color: rgba(244, 63, 94, 0.22); }
 
       .${NS}-stats-modal {
         position: fixed; inset: 0; z-index: 2147483001;
@@ -1370,6 +1434,7 @@
       this.togglePunct = this._makeToggle('Satzz.-Pausen', 'punctuationPauses', 'ui:toggle-punct');
       this.toggleCaptions = this._makeToggle('Bildunterschr. überspr.', 'skipImageCaptions', 'ui:toggle-captions');
       this.toggleCitations = this._makeToggle('Quellen überspr.', 'skipCitations', 'ui:toggle-citations');
+      this.toggleSourceHighlight = this._makeToggle('Quelltext markieren', 'highlightSourceWord', 'ui:toggle-source-highlight');
 
       this.togglePosition = Utils.el('button', {
         class: `${NS}-btn`, text: s.get('toolbarPosition') === 'top' ? '⬇ Position' : '⬆ Position',
@@ -1387,7 +1452,7 @@
 
       const toggleRow = Utils.el('div', { class: `${NS}-row` }, [
         this.toggleOrp, this.toggleOrpFixed, this.toggleScroll, this.toggleAdaptive, this.togglePunct,
-        this.toggleCaptions, this.toggleCitations, this.focusModeSelect,
+        this.toggleCaptions, this.toggleCitations, this.toggleSourceHighlight, this.focusModeSelect,
       ]);
 
       const statsRow = Utils.el('div', { class: `${NS}-row` }, [
@@ -1630,6 +1695,53 @@
     }
   }
 
+  /**
+   * Hebt das aktuell vorgelesene Wort dezent im Original-Quelltext hervor.
+   * Nutzt die CSS Custom Highlight API (Highlight/CSS.highlights), sofern der
+   * Browser sie unterstützt – dadurch keine DOM-Mutation nötig (kein Risiko,
+   * den MutationObserver für Lazy-Reparse auszulösen, keine Layout-Seiteneffekte).
+   * Auf nicht unterstützten Browsern ist die Klasse ein No-Op.
+   */
+  class SourceHighlighter {
+    static HIGHLIGHT_NAME = `${NS}-current-word`;
+
+    constructor() {
+      this._supported = typeof CSS !== 'undefined' && !!CSS.highlights && typeof Highlight === 'function';
+      if (this._supported) {
+        this._highlight = new Highlight();
+        CSS.highlights.set(SourceHighlighter.HIGHLIGHT_NAME, this._highlight);
+      }
+    }
+
+    /** Hebt das Wort mit gegebenem Block + block-lokalem Token-Index hervor. */
+    highlight(block, localIndex) {
+      if (!this._supported) return;
+      this._highlight.clear();
+      if (!block || localIndex == null) return;
+      const wordRange = block.getWordRanges()[localIndex];
+      if (!wordRange) return;
+      try {
+        const range = new Range();
+        range.setStart(wordRange.startNode, wordRange.startOffset);
+        range.setEnd(wordRange.endNode, wordRange.endOffset);
+        this._highlight.add(range);
+      } catch {
+        // Range kann ungültig werden, falls die Seite den Text zwischenzeitlich verändert hat.
+      }
+    }
+
+    clear() {
+      if (!this._supported) return;
+      this._highlight.clear();
+    }
+
+    dispose() {
+      if (!this._supported) return;
+      this._highlight.clear();
+      CSS.highlights.delete(SourceHighlighter.HIGHLIGHT_NAME);
+    }
+  }
+
   // ===========================================================================
   // 13. APP (ORCHESTRIERUNG / BOOTSTRAP)
   // ===========================================================================
@@ -1649,6 +1761,7 @@
       this.domParser = new DomParser(this.bus, this.settings);
       this.keyboard = new KeyboardController(this.bus, this.settings);
       this.focusMode = new FocusModeController();
+      this.sourceHighlighter = new SourceHighlighter();
 
       this.container = null;
       this.toolbar = null;
@@ -1713,6 +1826,8 @@
       const entry = this.reader.stream[0];
       return {
         token: entry?.token || { text: '', punctuation: null, isNumber: false, letterCount: 0 },
+        block: entry?.block || null,
+        localIndex: entry?.localIndex ?? 0,
         index: 0,
         total: this.reader.totalWords,
         progress: 0,
@@ -1777,6 +1892,7 @@
       this.toolbar = null;
       this.container = null;
       this.focusMode.clear();
+      this.sourceHighlighter.clear();
       this.floatingButton?.show();
     }
 
@@ -1805,6 +1921,11 @@
 
       this.bus.on('ui:toggle-captions', ({ value }) => { this.settings.set('skipImageCaptions', value); this._reparseContainer(); });
       this.bus.on('ui:toggle-citations', ({ value }) => { this.settings.set('skipCitations', value); this._reparseContainer(); });
+
+      this.bus.on('ui:toggle-source-highlight', ({ value }) => {
+        this.settings.set('highlightSourceWord', value);
+        if (!value) this.sourceHighlighter.clear();
+      });
 
       this.bus.on('ui:font-size-set', ({ size }) => {
         this.settings.set('displayFontSize', size);
@@ -1836,6 +1957,11 @@
       this.bus.on('reader:token', (data) => {
         if (this.settings.get('autoScroll') && data.block?.element) {
           this.scrollEngine.scrollToElement(data.block.element);
+        }
+        if (this.settings.get('highlightSourceWord')) {
+          this.sourceHighlighter.highlight(data.block, data.localIndex);
+        } else {
+          this.sourceHighlighter.clear();
         }
       });
 
