@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Universal SpeedReader
 // @namespace    https://github.com/hubmey/tm_speedreader.git
-// @version      1.10.2
+// @version      1.11.1
 // @description  RSVP/ORP Speedreader für nahezu jede textbasierte Webseite, mit synchronem Auto-Scroll des Originalcontainers.
 // @author       Hubertus Meyer
 // @match        *://*/*
@@ -83,11 +83,16 @@
     minPlaceholderPauseMs: 300,
     maxPlaceholderPauseMs: 3000,
     clickSoundEnabled: false, // kurzer Klickton bei jedem neuen Wort
+    clickSoundVariant: 'click', // 'click' | 'soft' | 'blip' | 'wood' | 'bell'
     displayFontSize: 30,      // Schriftgröße (px) der Wortanzeige
     minFontSize: 14,
     maxFontSize: 72,
     focusMode: 'off',         // 'off' | 'dim' | 'blur' | 'hide' – Behandlung von Elementen außerhalb des Containers
     highlightSourceWord: true, // aktuelles Wort dezent im Original-Quelltext hervorheben
+    superFocusMode: false,    // nur das aktuelle Wort anzeigen, komplette Toolbar-Chrome ausblenden
+    showStatsOnFinish: true,  // Zusammenfassung nach Sitzungsende anzeigen
+    autoCloseAfterFinish: false, // Reader nach Sitzungsende automatisch schließen
+    autoCloseDelayMs: 4000,   // Verzögerung bis Auto-Schließen, falls Statistik noch angezeigt wird
     speedFactors: {
       heading: 0.55,
       image: 0.30,
@@ -116,6 +121,8 @@
       nextChapter: 'PageDown',
       prevChapter: 'PageUp',
       close: 'Escape',
+      fullscreen: 'KeyF',
+      superFocus: 'KeyZ',
     },
     lastPosition: {}, // { [urlHash]: { tokenIndex, url, title, timestamp } }
   });
@@ -131,6 +138,50 @@
     'vs', 'vs.', 'e.g', 'e.g.', 'i.e', 'i.e.', 'no', 'no.', 'nr', 'nr.',
   ]);
 
+  /**
+   * Kompaktes, einheitliches Icon-Set (Strichzeichnungen, 24x24 viewBox,
+   * currentColor) für Toolbar-Buttons – ersetzt die zuvor uneinheitlichen
+   * Emoji-Symbole (die je nach OS/Browser unterschiedlich aussahen und z. B.
+   * bei Wort- vs. Kapitel-Navigation nicht eindeutig unterscheidbar waren).
+   * Einfacher/doppelter Chevron = Wort- vs. Kapitelsprung (konsistente Konvention).
+   */
+  const ICONS = {
+    play: '<path d="M8 5v14l11-7z" fill="currentColor"/>',
+    pause: '<path d="M7 5h4v14H7zM13 5h4v14h-4z" fill="currentColor"/>',
+    stop: '<rect x="6" y="6" width="12" height="12" rx="1.5" fill="currentColor"/>',
+    chevronLeft: '<polyline points="15 5 8 12 15 19" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round"/>',
+    chevronRight: '<polyline points="9 5 16 12 9 19" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round"/>',
+    chevronsLeft: '<polyline points="18 5 11 12 18 19" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round"/><polyline points="11 5 4 12 11 19" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round"/>',
+    chevronsRight: '<polyline points="6 5 13 12 6 19" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round"/><polyline points="13 5 20 12 13 19" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round"/>',
+    close: '<line x1="6" y1="6" x2="18" y2="18" stroke="currentColor" stroke-width="2.3" stroke-linecap="round"/><line x1="18" y1="6" x2="6" y2="18" stroke="currentColor" stroke-width="2.3" stroke-linecap="round"/>',
+    maximize: '<path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>',
+    minimize: '<path d="M9 4v5H4M15 4v5h5M9 20v-5H4M15 20v-5h5" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>',
+    updown: '<polyline points="7 9 12 4 17 9" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/><polyline points="7 15 12 20 17 15" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>',
+    eye: '<path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/><circle cx="12" cy="12" r="3" fill="none" stroke="currentColor" stroke-width="2"/>',
+  };
+
+  /** Erzeugt ein kleines Inline-SVG-Icon aus ICONS[name]. */
+  function makeIcon(name, size = 15) {
+    const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    svg.setAttribute('viewBox', '0 0 24 24');
+    svg.setAttribute('width', String(size));
+    svg.setAttribute('height', String(size));
+    svg.setAttribute('aria-hidden', 'true');
+    svg.style.display = 'block';
+    svg.innerHTML = ICONS[name] || '';
+    return svg;
+  }
+
+  /** Menschenlesbare Kurzform für KeyboardEvent.code-Werte, für Tooltips/Hints. */
+  const HOTKEY_LABELS = {
+    Space: 'Leertaste', ArrowLeft: '←', ArrowRight: '→', ArrowUp: '↑', ArrowDown: '↓',
+    PageUp: 'Bild ↑', PageDown: 'Bild ↓', Escape: 'Esc',
+    KeyF: 'F', KeyZ: 'Z',
+  };
+  function hotkeyLabel(code) {
+    return HOTKEY_LABELS[code] || code || '';
+  }
+
   // ===========================================================================
   // 1. UTILS
   // ===========================================================================
@@ -140,6 +191,9 @@
    * Funktionen, damit nichts in den globalen Scope der Seite entweicht.
    */
   class Utils {
+    /** Block-Level-Elemente, an deren Grenzen visibleTextContent() eine Wortgrenze erzwingt. */
+    static BLOCK_TAGS = 'li, p, div, br, tr, td, th, dt, dd, h1, h2, h3, h4, h5, h6, blockquote, section, article, header, footer, figure, figcaption, ul, ol, table, pre';
+
     static clamp(value, min, max) {
       return Math.min(max, Math.max(min, value));
     }
@@ -216,6 +270,7 @@
      */
     static visibleTextContent(element) {
       let text = '';
+      let lastBlock = null;
       const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT, {
         acceptNode: (node) => {
           const parent = node.parentElement;
@@ -225,7 +280,18 @@
         },
       });
       let node;
-      while ((node = walker.nextNode())) text += node.nodeValue;
+      while ((node = walker.nextNode())) {
+        // Textknoten ohne trennenden Whitespace im Markup (z. B. dicht gepackte
+        // <li>-Elemente ohne Zeilenumbruch dazwischen) würden sonst zu einem
+        // einzigen verklebten "Wort" verschmelzen (Wortende + nächster Zeilenanfang).
+        // Beim Wechsel des umschließenden Block-Elements daher eine Wortgrenze erzwingen.
+        const block = node.parentElement.closest(Utils.BLOCK_TAGS) || element;
+        if (lastBlock !== null && block !== lastBlock && text && !/\s$/.test(text)) {
+          text += ' ';
+        }
+        text += node.nodeValue;
+        lastBlock = block;
+      }
       return text;
     }
 
@@ -502,6 +568,7 @@
 
       let currentStart = null;
       let lastNode = null;
+      let lastBlock = null;
       const flush = (endNode, endOffset) => {
         if (currentStart) ranges.push({ startNode: currentStart.node, startOffset: currentStart.offset, endNode, endOffset });
         currentStart = null;
@@ -509,7 +576,14 @@
 
       let node;
       while ((node = walker.nextNode())) {
+        // Muss dieselbe Block-Grenzen-Logik wie Utils.visibleTextContent() anwenden,
+        // sonst driften Ranges und Token-Liste bei Listen/Tabellen etc. auseinander.
+        const block = node.parentElement.closest(Utils.BLOCK_TAGS) || this.element;
+        if (lastBlock !== null && block !== lastBlock && currentStart !== null && lastNode) {
+          flush(lastNode, lastNode.nodeValue.length);
+        }
         lastNode = node;
+        lastBlock = block;
         const text = node.nodeValue.replace(/ /g, ' ');
         for (let i = 0; i < text.length; i++) {
           if (/\s/.test(text[i])) {
@@ -808,6 +882,15 @@
    * die durch den vorherigen Start-Klick bereits vorliegt).
    */
   class SoundEngine {
+    /** Klangfarben-Presets: Oszillatortyp, Grundfrequenz, Ausklingdauer, Lautstärke. */
+    static VARIANTS = {
+      click: { type: 'square', freq: 1100, duration: 0.03, gain: 0.05 },
+      soft: { type: 'sine', freq: 600, duration: 0.05, gain: 0.06 },
+      blip: { type: 'triangle', freq: 1800, duration: 0.02, gain: 0.05 },
+      wood: { type: 'square', freq: 220, duration: 0.02, gain: 0.07 },
+      bell: { type: 'sine', freq: 1400, duration: 0.12, gain: 0.04 },
+    };
+
     constructor(settings) {
       this.settings = settings;
       this._ctx = null;
@@ -827,15 +910,16 @@
       if (!this.settings.get('clickSoundEnabled')) return;
       const ctx = this._ensureContext();
       if (!ctx) return;
+      const variant = SoundEngine.VARIANTS[this.settings.get('clickSoundVariant')] || SoundEngine.VARIANTS.click;
       const osc = ctx.createOscillator();
       const gain = ctx.createGain();
-      osc.type = 'square';
-      osc.frequency.value = 1100;
-      gain.gain.setValueAtTime(0.05, ctx.currentTime);
-      gain.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + 0.025);
+      osc.type = variant.type;
+      osc.frequency.value = variant.freq;
+      gain.gain.setValueAtTime(variant.gain, ctx.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + variant.duration);
       osc.connect(gain).connect(ctx.destination);
       osc.start();
-      osc.stop(ctx.currentTime + 0.03);
+      osc.stop(ctx.currentTime + variant.duration + 0.01);
     }
 
     dispose() {
@@ -1337,6 +1421,12 @@
         flex: 1 1 auto; min-height: 0; height: auto; border-bottom: none;
       }
 
+      /* Superfokus: nur das aktuelle Wort, jegliche Steuer-/Statuszeilen ausgeblendet.
+         Funktioniert eigenständig (kompakte Pille) oder kombiniert mit Vollbild. */
+      .${NS}-toolbar.usr-superfocus .${NS}-superfocus-hide { display: none; }
+      .${NS}-toolbar.usr-superfocus .${NS}-display { border-bottom: none; padding-bottom: 0; }
+      .${NS}-toolbar.usr-superfocus:not(.usr-fullscreen-mode) { padding: 14px 20px; }
+
       .${NS}-display {
         position: relative; display: flex; align-items: center; justify-content: center;
         overflow: hidden;
@@ -1362,16 +1452,18 @@
       .${NS}-progress-fill { height: 100%; background: #4f46e5; width: 0%; transition: width .08s linear; }
 
       .${NS}-btn {
-        background: rgba(255,255,255,.08); color: inherit; border: none; border-radius: 6px;
-        padding: 6px 10px; cursor: pointer; font-size: 13px; line-height: 1;
+        display: inline-flex; align-items: center; justify-content: center;
+        background: rgba(255,255,255,.08); color: inherit; border: none; border-radius: 7px;
+        width: 30px; height: 30px; padding: 0; cursor: pointer; line-height: 1;
+        transition: background .12s ease, transform .08s ease;
       }
       .${NS}-toolbar.usr-theme-light .${NS}-btn { background: rgba(0,0,0,.06); }
       .${NS}-btn:hover { background: rgba(255,255,255,.18); }
       .${NS}-toolbar.usr-theme-light .${NS}-btn:hover { background: rgba(0,0,0,.12); }
+      .${NS}-btn:active { transform: scale(.92); }
       .${NS}-btn.usr-active { background: #4f46e5; color: #fff; }
 
-      .${NS}-slider { width: 120px; }
-      .${NS}-toggle { display: flex; align-items: center; gap: 4px; font-size: 12px; cursor: pointer; user-select: none; }
+      .${NS}-slider { width: 120px; accent-color: #4f46e5; }
       .${NS}-stat { font-size: 11px; opacity: .85; white-space: nowrap; }
       .${NS}-spacer { flex: 1 1 auto; }
       .${NS}-select {
@@ -1379,6 +1471,25 @@
         padding: 5px 8px; font-size: 12px; cursor: pointer;
       }
       .${NS}-toolbar.usr-theme-light .${NS}-select { background: rgba(0,0,0,.06); }
+
+      /* Icon-Toggle-Pills: Punkt-Indikator statt nativer Checkbox-Optik,
+         gefüllt+farbig sobald aktiv (per :has() an den Checkbox-Zustand gekoppelt). */
+      .${NS}-toggle {
+        display: inline-flex; align-items: center; gap: 6px; font-size: 12px;
+        padding: 5px 10px 5px 8px; border-radius: 999px; background: rgba(255,255,255,.06);
+        cursor: pointer; user-select: none; transition: background .12s ease;
+      }
+      .${NS}-toolbar.usr-theme-light .${NS}-toggle { background: rgba(0,0,0,.05); }
+      .${NS}-toggle:hover { background: rgba(255,255,255,.12); }
+      .${NS}-toolbar.usr-theme-light .${NS}-toggle:hover { background: rgba(0,0,0,.09); }
+      .${NS}-toggle input { position: absolute; opacity: 0; width: 0; height: 0; }
+      .${NS}-toggle-dot {
+        width: 9px; height: 9px; border-radius: 50%; flex: 0 0 auto;
+        background: rgba(255,255,255,.3); transition: background .12s ease, transform .12s ease;
+      }
+      .${NS}-toolbar.usr-theme-light .${NS}-toggle-dot { background: rgba(0,0,0,.22); }
+      .${NS}-toggle:has(input:checked) { background: #4f46e5; color: #fff; }
+      .${NS}-toggle:has(input:checked) .${NS}-toggle-dot { background: #fff; transform: scale(1.15); }
 
       /* Fokusmodus: Elemente außerhalb des gewählten Containers werden gedimmt/verwischt/versteckt. */
       .${NS}-focus-dim { opacity: .12 !important; transition: opacity .25s ease; }
@@ -1559,13 +1670,37 @@
       this.statRemaining = Utils.el('span', { class: `${NS}-stat`, text: '--:--' });
       this.statWpm = Utils.el('span', { class: `${NS}-stat`, text: `${s.get('wpm')} WPM` });
 
-      this.btnPrevChapter = Utils.el('button', { class: `${NS}-btn`, text: '⏪', title: 'Vorherige Überschrift (PageUp)', onclick: () => this.bus.emit('ui:prev-chapter') });
-      this.btnPrev = Utils.el('button', { class: `${NS}-btn`, text: '⏮', title: 'Zurück', onclick: () => this.bus.emit('ui:prev') });
-      this.btnStart = Utils.el('button', { class: `${NS}-btn`, text: '▶', title: 'Start/Pause', onclick: () => this.bus.emit('ui:toggle') });
-      this.btnStop = Utils.el('button', { class: `${NS}-btn`, text: '⏹', title: 'Stopp', onclick: () => this.bus.emit('ui:stop') });
-      this.btnNext = Utils.el('button', { class: `${NS}-btn`, text: '⏭', title: 'Vor', onclick: () => this.bus.emit('ui:next') });
-      this.btnNextChapter = Utils.el('button', { class: `${NS}-btn`, text: '⏩', title: 'Nächste Überschrift (PageDown)', onclick: () => this.bus.emit('ui:next-chapter') });
-      this.btnClose = Utils.el('button', { class: `${NS}-btn`, text: '✕', title: 'Schließen', onclick: () => this.bus.emit('ui:close') });
+      // Einheitliches Icon-Set statt gemischter Emoji/Symbole: einfacher Chevron = Wort-
+      // Schritt, doppelter Chevron = Kapitel-Sprung – eindeutig unterscheidbar.
+      const hotkeys = s.get('hotkeys');
+      this.btnPrevChapter = Utils.el('button', {
+        class: `${NS}-btn`, title: `Vorherige Überschrift (${hotkeyLabel(hotkeys.prevChapter)})`,
+        onclick: () => this.bus.emit('ui:prev-chapter'),
+      }, [makeIcon('chevronsLeft')]);
+      this.btnPrev = Utils.el('button', {
+        class: `${NS}-btn`, title: `Wort zurück (${hotkeyLabel(hotkeys.prev)})`,
+        onclick: () => this.bus.emit('ui:prev'),
+      }, [makeIcon('chevronLeft')]);
+      this.btnStart = Utils.el('button', {
+        class: `${NS}-btn`, title: `Start/Pause (${hotkeyLabel(hotkeys.togglePause)})`,
+        onclick: () => this.bus.emit('ui:toggle'),
+      }, [makeIcon('play')]);
+      this.btnStop = Utils.el('button', {
+        class: `${NS}-btn`, title: 'Stopp',
+        onclick: () => this.bus.emit('ui:stop'),
+      }, [makeIcon('stop')]);
+      this.btnNext = Utils.el('button', {
+        class: `${NS}-btn`, title: `Wort vor (${hotkeyLabel(hotkeys.next)})`,
+        onclick: () => this.bus.emit('ui:next'),
+      }, [makeIcon('chevronRight')]);
+      this.btnNextChapter = Utils.el('button', {
+        class: `${NS}-btn`, title: `Nächste Überschrift (${hotkeyLabel(hotkeys.nextChapter)})`,
+        onclick: () => this.bus.emit('ui:next-chapter'),
+      }, [makeIcon('chevronsRight')]);
+      this.btnClose = Utils.el('button', {
+        class: `${NS}-btn`, title: `Schließen (${hotkeyLabel(hotkeys.close)})`,
+        onclick: () => this.bus.emit('ui:close'),
+      }, [makeIcon('close')]);
 
       this.wpmSlider = Utils.el('input', {
         class: `${NS}-slider`, type: 'range', min: s.get('minWpm'), max: s.get('maxWpm'), value: s.get('wpm'),
@@ -1608,49 +1743,75 @@
       this.toggleTables = this._makeToggle('Tabellen überspr.', 'skipTables', 'ui:toggle-tables');
       this.toggleSourceHighlight = this._makeToggle('Quelltext markieren', 'highlightSourceWord', 'ui:toggle-source-highlight');
       this.toggleClickSound = this._makeToggle('Klickton', 'clickSoundEnabled', 'ui:toggle-click-sound');
+      this.toggleShowStats = this._makeToggle('Zusammenfassung', 'showStatsOnFinish', 'ui:toggle-show-stats');
+      this.toggleAutoClose = this._makeToggle('Autom. schließen', 'autoCloseAfterFinish', 'ui:toggle-auto-close');
+
+      this.clickSoundVariantSelect = Utils.el('select', {
+        class: `${NS}-select`, title: 'Klangfarbe des Klicktons',
+        onchange: (e) => this.bus.emit('ui:click-sound-variant-set', { variant: e.target.value }),
+      }, [
+        Utils.el('option', { value: 'click', text: 'Klick' }),
+        Utils.el('option', { value: 'soft', text: 'Weich' }),
+        Utils.el('option', { value: 'blip', text: 'Blip' }),
+        Utils.el('option', { value: 'wood', text: 'Holz' }),
+        Utils.el('option', { value: 'bell', text: 'Glocke' }),
+      ]);
+      this.clickSoundVariantSelect.value = s.get('clickSoundVariant');
 
       this.togglePosition = Utils.el('button', {
-        class: `${NS}-btn`, text: s.get('toolbarPosition') === 'top' ? '⬇ Position' : '⬆ Position',
-        title: 'Toolbar-Position wechseln',
+        class: `${NS}-btn`, title: 'Toolbar-Position wechseln (oben/unten)',
         onclick: () => this.bus.emit('ui:toggle-position'),
-      });
+      }, [makeIcon('updown')]);
 
       this.btnFullscreen = Utils.el('button', {
-        class: `${NS}-btn`, text: '⛶', title: 'Vollbild',
+        class: `${NS}-btn`, title: `Vollbild (${hotkeyLabel(hotkeys.fullscreen)})`,
         onclick: () => this.bus.emit('ui:toggle-fullscreen'),
-      });
+      }, [makeIcon('maximize')]);
 
-      const controlsRow = Utils.el('div', { class: `${NS}-row` }, [
+      this.btnSuperFocus = Utils.el('button', {
+        class: `${NS}-btn`, title: `Superfokus – nur das Wort anzeigen (${hotkeyLabel(hotkeys.superFocus)})`,
+        onclick: () => this.bus.emit('ui:toggle-super-focus'),
+      }, [makeIcon('eye')]);
+      this.btnSuperFocus.classList.toggle('usr-active', s.get('superFocusMode'));
+
+      const controlsRow = Utils.el('div', { class: `${NS}-row ${NS}-superfocus-hide` }, [
         this.btnPrevChapter, this.btnPrev, this.btnStart, this.btnStop, this.btnNext, this.btnNextChapter,
         Utils.el('span', { class: `${NS}-stat`, text: 'WPM' }), this.wpmSlider, this.statWpm,
         Utils.el('span', { class: `${NS}-stat`, text: 'Schrift' }), this.fontSizeSlider, this.statFontSize,
         Utils.el('span', { class: `${NS}-stat`, text: 'Platzh.-Pause' }), this.placeholderPauseSlider, this.statPlaceholderPause,
         Utils.el('div', { class: `${NS}-spacer` }),
-        this.btnFullscreen, this.togglePosition, this.btnClose,
+        this.btnSuperFocus, this.btnFullscreen, this.togglePosition, this.btnClose,
       ]);
 
-      const toggleRow = Utils.el('div', { class: `${NS}-row` }, [
+      const toggleRow = Utils.el('div', { class: `${NS}-row ${NS}-superfocus-hide` }, [
         this.toggleOrp, this.toggleOrpFixed, this.toggleScroll, this.toggleAdaptive, this.togglePunct,
         this.toggleCaptions, this.toggleCitations, this.toggleTables, this.toggleSourceHighlight,
-        this.toggleClickSound, this.focusModeSelect,
+        this.toggleClickSound, this.clickSoundVariantSelect, this.focusModeSelect,
       ]);
 
-      const statsRow = Utils.el('div', { class: `${NS}-row` }, [
+      const statsRow = Utils.el('div', { class: `${NS}-row ${NS}-superfocus-hide` }, [
         this.statChapter, this.statWords, this.statPercent, this.statRemaining,
+        this.toggleShowStats, this.toggleAutoClose,
       ]);
 
-      return Utils.el('div', { class: `${NS}-toolbar ${NS}-ui ${posClass} ${themeClass}` }, [
+      this.progressTrack.classList.add(`${NS}-superfocus-hide`);
+
+      return Utils.el('div', { class: `${NS}-toolbar ${NS}-ui ${posClass} ${themeClass}${s.get('superFocusMode') ? ' usr-superfocus' : ''}` }, [
         this.display, this.progressTrack, controlsRow, toggleRow, statsRow,
       ]);
     }
 
-    _makeToggle(label, settingKey, eventName) {
+    _makeToggle(label, settingKey, eventName, hotkeyCode) {
+      const title = hotkeyCode ? `${label} (${hotkeyLabel(hotkeyCode)})` : label;
       const input = Utils.el('input', {
         type: 'checkbox',
         onchange: (e) => this.bus.emit(eventName, { value: e.target.checked }),
       });
       input.checked = !!this.settings.get(settingKey);
-      const wrapper = Utils.el('label', { class: `${NS}-toggle` }, [input, document.createTextNode(label)]);
+      // Punkt-Indikator statt nativer Checkbox-Optik: einheitliches Pill-Icon-Toggle
+      // (grau = aus, gefüllt+Häkchen = an), Zustand per CSS :has() gesteuert.
+      const dot = Utils.el('span', { class: `${NS}-toggle-dot` });
+      const wrapper = Utils.el('label', { class: `${NS}-toggle`, title }, [input, dot, document.createTextNode(label)]);
       wrapper._input = input;
       return wrapper;
     }
@@ -1690,11 +1851,19 @@
       this._fullscreenActive = false;
       this._fullscreenChangeHandler = () => {
         this._fullscreenActive = !!document.fullscreenElement;
-        this.btnFullscreen.textContent = this._fullscreenActive ? '⛶ ✕' : '⛶';
+        this.btnFullscreen.replaceChildren(makeIcon(this._fullscreenActive ? 'minimize' : 'maximize'));
         this.btnFullscreen.classList.toggle('usr-active', this._fullscreenActive);
         this.element.classList.toggle('usr-fullscreen-mode', this._fullscreenActive);
       };
       document.addEventListener('fullscreenchange', this._fullscreenChangeHandler);
+
+      this.bus.on('settings:super-focus-changed', ({ value }) => {
+        this.element.classList.toggle('usr-superfocus', value);
+        this.btnSuperFocus.classList.toggle('usr-active', value);
+      });
+      this.bus.on('settings:click-sound-variant-changed', ({ variant }) => {
+        this.clickSoundVariantSelect.value = variant;
+      });
     }
 
     /** Misst die Breite von Text bei gegebener Schriftgröße via Canvas (kein DOM-Reflow nötig). */
@@ -1761,7 +1930,7 @@
     }
 
     _renderState(state) {
-      this.btnStart.textContent = state === ReaderState.PLAYING ? '⏸' : '▶';
+      this.btnStart.replaceChildren(makeIcon(state === ReaderState.PLAYING ? 'pause' : 'play'));
       this.btnStart.classList.toggle('usr-active', state === ReaderState.PLAYING);
     }
 
@@ -1773,7 +1942,7 @@
 
   /** Zeigt am Ende einer Lesesession eine Statistik-Übersicht als modales Overlay. */
   class StatsPanel {
-    static show(stats, theme, onClose) {
+    static show(stats, theme, onClose, autoCloseMs = 0) {
       const themeClass = theme === 'light' ? 'usr-theme-light' : '';
       const rows = [
         ['Gesamtzeit', Utils.formatTime(stats.totalTimeSeconds)],
@@ -1801,6 +1970,14 @@
       const modal = Utils.el('div', { class: `${NS}-stats-modal ${NS}-ui`, onclick: (e) => { if (e.target === modal) { modal.remove(); onClose?.(); } } }, [card]);
       closeBtn.addEventListener('click', () => onClose?.());
       document.body.appendChild(modal);
+
+      if (autoCloseMs > 0) {
+        setTimeout(() => {
+          if (!modal.isConnected) return; // Nutzer hat bereits manuell geschlossen.
+          modal.remove();
+          onClose?.();
+        }, autoCloseMs);
+      }
     }
   }
 
@@ -1838,6 +2015,9 @@
       if (tag === 'INPUT' || tag === 'TEXTAREA' || document.activeElement?.isContentEditable) {
         if (evt.code !== 'Escape') return;
       }
+      // Kombinationen mit Ctrl/Cmd/Alt gehören dem Browser/OS (z. B. Cmd+F = Suchen),
+      // nicht uns – sonst würde z. B. das Vollbild-Hotkey "F" mit Strg/Cmd+F kollidieren.
+      if ((evt.ctrlKey || evt.metaKey || evt.altKey) && evt.code !== 'Escape') return;
 
       // preventDefault + stopPropagation zusammen: verhindert nicht nur die
       // native Browser-Aktion (z. B. Seiten-Scroll bei Pfeiltasten), sondern
@@ -1885,6 +2065,16 @@
           evt.preventDefault();
           evt.stopPropagation();
           this.bus.emit('ui:close');
+          break;
+        case hotkeys.fullscreen:
+          evt.preventDefault();
+          evt.stopPropagation();
+          this.bus.emit('ui:toggle-fullscreen');
+          break;
+        case hotkeys.superFocus:
+          evt.preventDefault();
+          evt.stopPropagation();
+          this.bus.emit('ui:toggle-super-focus');
           break;
         default:
           return;
@@ -2238,6 +2428,20 @@
         }
       });
 
+      this.bus.on('ui:toggle-super-focus', () => {
+        const next = !this.settings.get('superFocusMode');
+        this.settings.set('superFocusMode', next);
+        this.bus.emit('settings:super-focus-changed', { value: next });
+      });
+
+      this.bus.on('ui:click-sound-variant-set', ({ variant }) => {
+        this.settings.set('clickSoundVariant', variant);
+        this.bus.emit('settings:click-sound-variant-changed', { variant });
+      });
+
+      this.bus.on('ui:toggle-show-stats', ({ value }) => this.settings.set('showStatsOnFinish', value));
+      this.bus.on('ui:toggle-auto-close', ({ value }) => this.settings.set('autoCloseAfterFinish', value));
+
       this.bus.on('ui:close', () => {
         this._persistPosition();
         this._teardownSession();
@@ -2258,7 +2462,17 @@
 
       this.bus.on('reader:finished', (stats) => {
         this._persistPosition();
-        StatsPanel.show(stats, this.settings.get('theme'), () => {});
+        const showStats = this.settings.get('showStatsOnFinish');
+        const autoClose = this.settings.get('autoCloseAfterFinish');
+        if (showStats) {
+          StatsPanel.show(
+            stats, this.settings.get('theme'),
+            () => { if (autoClose) this._teardownSession(); },
+            autoClose ? this.settings.get('autoCloseDelayMs') : 0
+          );
+        } else if (autoClose) {
+          this._teardownSession();
+        }
       });
     }
   }
