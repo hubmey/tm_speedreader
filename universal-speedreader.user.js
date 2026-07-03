@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Universal SpeedReader
 // @namespace    https://github.com/hubmey/tm_speedreader.git
-// @version      1.11.1
+// @version      1.13.0
 // @description  RSVP/ORP Speedreader für nahezu jede textbasierte Webseite, mit synchronem Auto-Scroll des Originalcontainers.
 // @author       Hubertus Meyer
 // @match        *://*/*
@@ -84,11 +84,18 @@
     maxPlaceholderPauseMs: 3000,
     clickSoundEnabled: false, // kurzer Klickton bei jedem neuen Wort
     clickSoundVariant: 'click', // 'click' | 'soft' | 'blip' | 'wood' | 'bell'
+    ttsEnabled: false,   // jedes Wort zusätzlich per Sprachausgabe (Web Speech API) vorlesen
+    ttsRate: 1,          // Sprechgeschwindigkeit (0.5–2), unabhängig von WPM
+    minTtsRate: 0.5,
+    maxTtsRate: 2,
+    ttsVolume: 1,
+    ttsVoiceURI: '',     // '' = Browser-/System-Standardstimme
     displayFontSize: 30,      // Schriftgröße (px) der Wortanzeige
     minFontSize: 14,
     maxFontSize: 72,
     focusMode: 'off',         // 'off' | 'dim' | 'blur' | 'hide' – Behandlung von Elementen außerhalb des Containers
     highlightSourceWord: true, // aktuelles Wort dezent im Original-Quelltext hervorheben
+    listZebraStripes: false,  // Wortanzeige-Hintergrund je nach <li>-Position abwechselnd einfärben
     superFocusMode: false,    // nur das aktuelle Wort anzeigen, komplette Toolbar-Chrome ausblenden
     showStatsOnFinish: true,  // Zusammenfassung nach Sitzungsende anzeigen
     autoCloseAfterFinish: false, // Reader nach Sitzungsende automatisch schließen
@@ -121,8 +128,11 @@
       nextChapter: 'PageDown',
       prevChapter: 'PageUp',
       close: 'Escape',
-      fullscreen: 'KeyF',
-      superFocus: 'KeyZ',
+      // Buchstaben-Hotkeys als evt.key (layout-abhängig, z. B. 'f'/'z'), NICHT
+      // evt.code – "KeyZ" ist die QWERTY-Position, die auf QWERTZ-Tastaturen
+      // (Y/Z vertauscht) nie durch Drücken der Z-Taste ausgelöst würde.
+      fullscreen: 'f',
+      superFocus: 'z',
     },
     lastPosition: {}, // { [urlHash]: { tokenIndex, url, title, timestamp } }
   });
@@ -172,14 +182,15 @@
     return svg;
   }
 
-  /** Menschenlesbare Kurzform für KeyboardEvent.code-Werte, für Tooltips/Hints. */
+  /** Menschenlesbare Kurzform für Hotkey-Werte (evt.code ODER einzelne evt.key-Buchstaben), für Tooltips/Hints. */
   const HOTKEY_LABELS = {
     Space: 'Leertaste', ArrowLeft: '←', ArrowRight: '→', ArrowUp: '↑', ArrowDown: '↓',
     PageUp: 'Bild ↑', PageDown: 'Bild ↓', Escape: 'Esc',
-    KeyF: 'F', KeyZ: 'Z',
   };
   function hotkeyLabel(code) {
-    return HOTKEY_LABELS[code] || code || '';
+    if (HOTKEY_LABELS[code]) return HOTKEY_LABELS[code];
+    if (code && code.length === 1) return code.toUpperCase();
+    return code || '';
   }
 
   // ===========================================================================
@@ -654,6 +665,10 @@
       CITE: BlockType.CITATION,
     };
 
+    /** CSS-Selektor aller bekannten Block-Tags, zur Prüfung ob ein generischer
+     * Container (z. B. <div>) noch "echte" Block-Nachfahren enthält. */
+    static KNOWN_BLOCK_SELECTOR = Object.keys(DomParser.BLOCK_TAG_MAP).join(',');
+
     constructor(eventBus, settings) {
       this.bus = eventBus;
       this.settings = settings;
@@ -717,7 +732,7 @@
       }
 
       const mapped = DomParser.BLOCK_TAG_MAP[element.tagName];
-      if (!mapped) return null;
+      if (!mapped) return this._classifyGenericFallback(element);
 
       switch (mapped) {
         case BlockType.IMAGE: {
@@ -776,6 +791,20 @@
           return this._makeBlock(element, mapped, factors.default);
         }
       }
+    }
+
+    /**
+     * Fallback für Elemente ohne bekannte Semantik (z. B. <div class="stamp">Text</div>
+     * statt <p>Text</p>, wie es manche CMS/Fachportale ausgeben). Ohne diesen Fallback
+     * würde solcher "loser" Text nie erfasst, weil der TreeWalker nur Elemente besucht
+     * und reiner Text nur über textContent eines KLASSIFIZIERTEN Vorfahren erfasst wird.
+     * Greift nur, wenn der Container selbst keine weiteren block-fähigen Nachfahren
+     * enthält – sonst würde deren Inhalt doppelt erfasst (die werden separat besucht).
+     */
+    _classifyGenericFallback(element) {
+      if (DomParser.SKIP_TAGS.has(element.tagName)) return null;
+      if (element.querySelector?.(DomParser.KNOWN_BLOCK_SELECTOR)) return null;
+      return this._makeBlock(element, BlockType.GENERIC_TEXT, this.settings.get('speedFactors').default);
     }
 
     _isFootnote(element) {
@@ -925,6 +954,57 @@
     dispose() {
       this._ctx?.close();
       this._ctx = null;
+    }
+  }
+
+  /**
+   * Optionale Sprachausgabe (Web Speech API) – liest jedes angezeigte Wort per
+   * SpeechSynthesis vor, parallel zur visuellen RSVP-Anzeige. Eine neue
+   * Utterance pro Wort ersetzt (cancel()) sofort die vorherige, damit sich bei
+   * höherem WPM keine Sprechwarteschlange aufstaut und die Ausgabe nicht immer
+   * weiter hinter der Anzeige zurückfällt. Bei sehr hohem WPM kann die Sprache
+   * dennoch nicht mit jedem Wort exakt Schritt halten – technische Grenze der
+   * Speech-Synthesis-API, kein Bug.
+   */
+  class TTSEngine {
+    constructor(settings) {
+      this.settings = settings;
+      this._supported = 'speechSynthesis' in window;
+      this._voices = [];
+      if (this._supported) {
+        this._loadVoices();
+        window.speechSynthesis.addEventListener?.('voiceschanged', () => this._loadVoices());
+      }
+    }
+
+    _loadVoices() {
+      this._voices = window.speechSynthesis.getVoices();
+    }
+
+    isSupported() {
+      return this._supported;
+    }
+
+    getVoices() {
+      return this._voices;
+    }
+
+    speak(text) {
+      if (!this._supported || !this.settings.get('ttsEnabled') || !text) return;
+      window.speechSynthesis.cancel();
+      const utterance = new SpeechSynthesisUtterance(text);
+      utterance.rate = this.settings.get('ttsRate');
+      utterance.volume = this.settings.get('ttsVolume');
+      const voiceURI = this.settings.get('ttsVoiceURI');
+      if (voiceURI) {
+        const voice = this._voices.find((v) => v.voiceURI === voiceURI);
+        if (voice) utterance.voice = voice;
+      }
+      window.speechSynthesis.speak(utterance);
+    }
+
+    stop() {
+      if (this._supported) window.speechSynthesis.cancel();
     }
   }
 
@@ -1404,10 +1484,17 @@
         padding: 10px 14px; border-radius: 10px;
         box-shadow: 0 4px 18px rgba(0,0,0,.25);
         display: flex; flex-direction: column; gap: 8px;
+        transition: background-color .15s ease;
       }
       .${NS}-toolbar.usr-pos-top { top: 8px; }
       .${NS}-toolbar.usr-pos-bottom { bottom: 8px; }
       .${NS}-toolbar.usr-theme-light { --usr-bg: #f9fafb; --usr-fg: #111827; box-shadow: 0 4px 18px rgba(0,0,0,.12); }
+      /* Listen-Zebrastreifen: färbt den Reader/die Toolbar selbst (NICHT die
+         Wortanzeige-Box), abwechselnd je nach <li>-Position. */
+      .${NS}-toolbar.usr-zebra-a { background: #4338ca; }
+      .${NS}-toolbar.usr-zebra-b { background: #0f766e; }
+      .${NS}-toolbar.usr-theme-light.usr-zebra-a { background: #e0e7ff; }
+      .${NS}-toolbar.usr-theme-light.usr-zebra-b { background: #d1fae5; }
 
       /* Vollbild: der Reader selbst füllt die komplette Seite statt einer kleinen
          Leiste – große, vertikal zentrierte Wortanzeige, Steuerung unten kompakt. */
@@ -1742,9 +1829,28 @@
       this.toggleCitations = this._makeToggle('Quellen überspr.', 'skipCitations', 'ui:toggle-citations');
       this.toggleTables = this._makeToggle('Tabellen überspr.', 'skipTables', 'ui:toggle-tables');
       this.toggleSourceHighlight = this._makeToggle('Quelltext markieren', 'highlightSourceWord', 'ui:toggle-source-highlight');
+      this.toggleListZebra = this._makeToggle('Listen-Streifen', 'listZebraStripes', 'ui:toggle-list-zebra');
       this.toggleClickSound = this._makeToggle('Klickton', 'clickSoundEnabled', 'ui:toggle-click-sound');
       this.toggleShowStats = this._makeToggle('Zusammenfassung', 'showStatsOnFinish', 'ui:toggle-show-stats');
       this.toggleAutoClose = this._makeToggle('Autom. schließen', 'autoCloseAfterFinish', 'ui:toggle-auto-close');
+      this.toggleTts = this._makeToggle('Vorlesen (TTS)', 'ttsEnabled', 'ui:toggle-tts');
+
+      this.statTtsRate = Utils.el('span', { class: `${NS}-stat`, text: `${s.get('ttsRate').toFixed(1)}x` });
+      this.ttsRateSlider = Utils.el('input', {
+        class: `${NS}-slider`, type: 'range',
+        min: s.get('minTtsRate'), max: s.get('maxTtsRate'), step: 0.1, value: s.get('ttsRate'),
+        title: 'Sprechgeschwindigkeit der Sprachausgabe',
+        oninput: (e) => this.bus.emit('ui:tts-rate-set', { rate: Number(e.target.value) }),
+      });
+
+      this.ttsVoiceSelect = Utils.el('select', {
+        class: `${NS}-select`, title: 'Stimme der Sprachausgabe',
+        onchange: (e) => this.bus.emit('ui:tts-voice-set', { voiceURI: e.target.value }),
+      });
+      this._populateTtsVoices();
+      if ('speechSynthesis' in window) {
+        window.speechSynthesis.addEventListener?.('voiceschanged', () => this._populateTtsVoices());
+      }
 
       this.clickSoundVariantSelect = Utils.el('select', {
         class: `${NS}-select`, title: 'Klangfarbe des Klicktons',
@@ -1779,14 +1885,16 @@
         Utils.el('span', { class: `${NS}-stat`, text: 'WPM' }), this.wpmSlider, this.statWpm,
         Utils.el('span', { class: `${NS}-stat`, text: 'Schrift' }), this.fontSizeSlider, this.statFontSize,
         Utils.el('span', { class: `${NS}-stat`, text: 'Platzh.-Pause' }), this.placeholderPauseSlider, this.statPlaceholderPause,
+        Utils.el('span', { class: `${NS}-stat`, text: 'TTS-Tempo' }), this.ttsRateSlider, this.statTtsRate,
         Utils.el('div', { class: `${NS}-spacer` }),
-        this.btnSuperFocus, this.btnFullscreen, this.togglePosition, this.btnClose,
+        this.btnFullscreen, this.togglePosition,
       ]);
 
       const toggleRow = Utils.el('div', { class: `${NS}-row ${NS}-superfocus-hide` }, [
         this.toggleOrp, this.toggleOrpFixed, this.toggleScroll, this.toggleAdaptive, this.togglePunct,
         this.toggleCaptions, this.toggleCitations, this.toggleTables, this.toggleSourceHighlight,
-        this.toggleClickSound, this.clickSoundVariantSelect, this.focusModeSelect,
+        this.toggleListZebra, this.toggleClickSound, this.clickSoundVariantSelect,
+        this.toggleTts, this.ttsVoiceSelect, this.focusModeSelect,
       ]);
 
       const statsRow = Utils.el('div', { class: `${NS}-row ${NS}-superfocus-hide` }, [
@@ -1796,8 +1904,16 @@
 
       this.progressTrack.classList.add(`${NS}-superfocus-hide`);
 
+      // Superfokus-Toggle und Schließen-Button bleiben IMMER sichtbar (eigene Zeile,
+      // nicht Teil von usr-superfocus-hide) – sonst gäbe es im Superfokus-Modus keinen
+      // Ausweg mehr, falls auch das Tastaturkürzel aus irgendeinem Grund nicht greift.
+      const exitRow = Utils.el('div', { class: `${NS}-row ${NS}-exit-row` }, [
+        Utils.el('div', { class: `${NS}-spacer` }),
+        this.btnSuperFocus, this.btnClose,
+      ]);
+
       return Utils.el('div', { class: `${NS}-toolbar ${NS}-ui ${posClass} ${themeClass}${s.get('superFocusMode') ? ' usr-superfocus' : ''}` }, [
-        this.display, this.progressTrack, controlsRow, toggleRow, statsRow,
+        this.display, this.progressTrack, controlsRow, toggleRow, statsRow, exitRow,
       ]);
     }
 
@@ -1814,6 +1930,22 @@
       const wrapper = Utils.el('label', { class: `${NS}-toggle`, title }, [input, dot, document.createTextNode(label)]);
       wrapper._input = input;
       return wrapper;
+    }
+
+    /** Füllt/aktualisiert die Stimmenauswahl (Web Speech API liefert Stimmen oft erst asynchron). */
+    _populateTtsVoices() {
+      if (!('speechSynthesis' in window)) {
+        this.ttsVoiceSelect.disabled = true;
+        this.ttsVoiceSelect.replaceChildren(Utils.el('option', { value: '', text: 'TTS nicht unterstützt' }));
+        return;
+      }
+      const voices = window.speechSynthesis.getVoices();
+      const current = this.settings.get('ttsVoiceURI');
+      this.ttsVoiceSelect.replaceChildren(
+        Utils.el('option', { value: '', text: 'Standardstimme' }),
+        ...voices.map((v) => Utils.el('option', { value: v.voiceURI, text: `${v.name} (${v.lang})` }))
+      );
+      this.ttsVoiceSelect.value = current || '';
     }
 
     _handleSeekClick(evt) {
@@ -1842,6 +1974,10 @@
       this.bus.on('settings:placeholder-pause-changed', ({ ms }) => {
         this.placeholderPauseSlider.value = ms;
         this.statPlaceholderPause.textContent = `${(ms / 1000).toFixed(1)}s`;
+      });
+      this.bus.on('settings:tts-rate-changed', ({ rate }) => {
+        this.ttsRateSlider.value = rate;
+        this.statTtsRate.textContent = `${rate.toFixed(1)}x`;
       });
 
       // Icon/Zustand nachführen, auch wenn Vollbild anders verlassen wird (z. B. ESC).
@@ -1896,8 +2032,29 @@
       this.display.style.fontSize = `${fontSize}px`;
     }
 
-    _renderToken({ token, index, total, progress, remainingSeconds, chapter }) {
+    /**
+     * Färbt den Anzeigehintergrund abwechselnd ein, solange innerhalb einer <li>
+     * gelesen wird (1., 3., 5. … Element = Variante A, 2., 4., 6. … = Variante B),
+     * damit beim Vorlesen von Listen erkennbar bleibt, wo ein Punkt endet und der
+     * nächste beginnt. Außerhalb von Listen wieder normaler Hintergrund.
+     */
+    _applyListZebra(block, localIndex) {
+      // Färbt den Reader/die Toolbar selbst (this.element), NICHT die Wortanzeige-Box –
+      // die Wortanzeige (.usr-display) bleibt immer neutral/unverändert.
+      this.element.classList.remove(`${NS}-zebra-a`, `${NS}-zebra-b`);
+      if (!this.settings.get('listZebraStripes') || block?.type !== BlockType.LIST || localIndex == null) return;
+      const range = block.getWordRanges()[localIndex];
+      const li = range?.startNode?.parentElement?.closest('li');
+      if (!li?.parentElement) return;
+      const siblings = [...li.parentElement.children].filter((c) => c.tagName === 'LI');
+      const liIndex = siblings.indexOf(li);
+      if (liIndex < 0) return;
+      this.element.classList.add(liIndex % 2 === 0 ? `${NS}-zebra-a` : `${NS}-zebra-b`);
+    }
+
+    _renderToken({ token, block, localIndex, index, total, progress, remainingSeconds, chapter }) {
       this._applyFittingFontSize(token.text);
+      this._applyListZebra(block, localIndex);
       const orpEnabled = this.settings.get('orpEnabled');
       if (orpEnabled) {
         const { before, focus, after } = ORP.split(token.text);
@@ -2066,18 +2223,23 @@
           evt.stopPropagation();
           this.bus.emit('ui:close');
           break;
-        case hotkeys.fullscreen:
-          evt.preventDefault();
-          evt.stopPropagation();
-          this.bus.emit('ui:toggle-fullscreen');
-          break;
-        case hotkeys.superFocus:
-          evt.preventDefault();
-          evt.stopPropagation();
-          this.bus.emit('ui:toggle-super-focus');
-          break;
-        default:
-          return;
+        default: {
+          // Buchstaben-Hotkeys separat über evt.key matchen (layout-abhängig,
+          // z. B. 'f'/'z') statt über evt.code (QWERTY-Tastenposition) – siehe
+          // Kommentar bei DEFAULT_SETTINGS.hotkeys.fullscreen weiter oben.
+          const key = (evt.key || '').toLowerCase();
+          if (key && key === hotkeys.fullscreen) {
+            evt.preventDefault();
+            evt.stopPropagation();
+            this.bus.emit('ui:toggle-fullscreen');
+          } else if (key && key === hotkeys.superFocus) {
+            evt.preventDefault();
+            evt.stopPropagation();
+            this.bus.emit('ui:toggle-super-focus');
+          } else {
+            return;
+          }
+        }
       }
       // Sicherheitsnetz für Browser, die einen minimalen Restscroll trotz
       // preventDefault() durchlassen (siehe Safari-Hinweis oben in enable()).
@@ -2204,6 +2366,7 @@
       this.focusMode = new FocusModeController();
       this.sourceHighlighter = new SourceHighlighter();
       this.soundEngine = new SoundEngine(this.settings);
+      this.ttsEngine = new TTSEngine(this.settings);
 
       this.container = null;
       this.toolbar = null;
@@ -2358,6 +2521,12 @@
         if (this.reader.state === ReaderState.PLAYING) this._resyncScroll();
       });
       this.bus.on('ui:stop', () => { this.reader.stop(); this._persistPosition(); });
+
+      // TTS nicht weiterreden lassen, sobald der Reader nicht mehr aktiv spielt
+      // (Pause/Stopp/Ende) – sonst spricht die letzte Utterance ungestört zu Ende.
+      this.bus.on('reader:state', ({ state }) => {
+        if (state !== ReaderState.PLAYING) this.ttsEngine.stop();
+      });
       this.bus.on('ui:next', () => { this.reader.pause(); this.reader.next(); });
       this.bus.on('ui:prev', () => { this.reader.pause(); this.reader.prev(); });
       this.bus.on('ui:next-chapter', () => { this.reader.pause(); this.reader.nextChapter(); });
@@ -2384,6 +2553,18 @@
         this.settings.set('highlightSourceWord', value);
         if (!value) this.sourceHighlighter.clear();
       });
+
+      this.bus.on('ui:toggle-list-zebra', ({ value }) => this.settings.set('listZebraStripes', value));
+
+      this.bus.on('ui:toggle-tts', ({ value }) => {
+        this.settings.set('ttsEnabled', value);
+        if (!value) this.ttsEngine.stop();
+      });
+      this.bus.on('ui:tts-rate-set', ({ rate }) => {
+        this.settings.set('ttsRate', rate);
+        this.bus.emit('settings:tts-rate-changed', { rate });
+      });
+      this.bus.on('ui:tts-voice-set', ({ voiceURI }) => this.settings.set('ttsVoiceURI', voiceURI));
 
       this.bus.on('ui:hotkey-fired', () => this.scrollEngine.suppressUserScrollDetection());
 
@@ -2458,6 +2639,7 @@
           this.sourceHighlighter.clear();
         }
         this.soundEngine.playTick();
+        this.ttsEngine.speak(data.token?.text);
       });
 
       this.bus.on('reader:finished', (stats) => {
