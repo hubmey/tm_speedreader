@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Universal SpeedReader
 // @namespace    https://github.com/hubmey/tm_speedreader.git
-// @version      1.9.0
+// @version      1.10.0
 // @description  RSVP/ORP Speedreader für nahezu jede textbasierte Webseite, mit synchronem Auto-Scroll des Originalcontainers.
 // @author       Hubertus Meyer
 // @match        *://*/*
@@ -1189,13 +1189,17 @@
 
         if (this._accumulatedMs >= delay) {
           this._accumulatedMs = 0;
-          this._emitCurrentToken();
           this._sessionStats.wordsRead++;
           this.index++;
           if (this.index >= this.stream.length) {
             this._finish();
             return;
           }
+          // Erst NACH dem Weiterzählen emittieren: die soeben abgelaufene Verzögerung
+          // gehörte dem gerade sichtbaren Wort, nicht dem neuen. Sonst würde das neue
+          // Wort (z. B. ein Tabellen-/Bild-Platzhalter mit erzwungener Pause) erst nach
+          // der Pause statt davor eingeblendet.
+          this._emitCurrentToken();
         }
         this._rafId = requestAnimationFrame(frame);
       };
@@ -1588,13 +1592,18 @@
         onclick: () => this.bus.emit('ui:toggle-position'),
       });
 
+      this.btnFullscreen = Utils.el('button', {
+        class: `${NS}-btn`, text: '⛶', title: 'Vollbild',
+        onclick: () => this.bus.emit('ui:toggle-fullscreen'),
+      });
+
       const controlsRow = Utils.el('div', { class: `${NS}-row` }, [
         this.btnPrevChapter, this.btnPrev, this.btnStart, this.btnStop, this.btnNext, this.btnNextChapter,
         Utils.el('span', { class: `${NS}-stat`, text: 'WPM' }), this.wpmSlider, this.statWpm,
         Utils.el('span', { class: `${NS}-stat`, text: 'Schrift' }), this.fontSizeSlider, this.statFontSize,
         Utils.el('span', { class: `${NS}-stat`, text: 'Platzh.-Pause' }), this.placeholderPauseSlider, this.statPlaceholderPause,
         Utils.el('div', { class: `${NS}-spacer` }),
-        this.togglePosition, this.btnClose,
+        this.btnFullscreen, this.togglePosition, this.btnClose,
       ]);
 
       const toggleRow = Utils.el('div', { class: `${NS}-row` }, [
@@ -1650,6 +1659,14 @@
         this.placeholderPauseSlider.value = ms;
         this.statPlaceholderPause.textContent = `${(ms / 1000).toFixed(1)}s`;
       });
+
+      // Icon/Zustand nachführen, auch wenn Vollbild anders verlassen wird (z. B. ESC).
+      this._fullscreenChangeHandler = () => {
+        const active = !!document.fullscreenElement;
+        this.btnFullscreen.textContent = active ? '⛶ ✕' : '⛶';
+        this.btnFullscreen.classList.toggle('usr-active', active);
+      };
+      document.addEventListener('fullscreenchange', this._fullscreenChangeHandler);
     }
 
     /** Misst die Breite von Text bei gegebener Schriftgröße via Canvas (kein DOM-Reflow nötig). */
@@ -1717,6 +1734,7 @@
     }
 
     dispose() {
+      document.removeEventListener('fullscreenchange', this._fullscreenChangeHandler);
       this.element.remove();
     }
   }
@@ -1785,38 +1803,51 @@
         if (evt.code !== 'Escape') return;
       }
 
+      // preventDefault + stopPropagation zusammen: verhindert nicht nur die
+      // native Browser-Aktion (z. B. Seiten-Scroll bei Pfeiltasten), sondern
+      // auch eigene Tastatur-/Scroll-Handler der Seite, die sonst gleichzeitig
+      // reagieren und den Lesefluss stören könnten (z. B. Pfeil hoch/runter,
+      // die zusätzlich zum Tempo-Wechsel den Container hoch-/runterscrollen).
       const hotkeys = this.settings.get('hotkeys');
       switch (evt.code) {
         case hotkeys.togglePause:
           evt.preventDefault();
+          evt.stopPropagation();
           this.bus.emit('ui:toggle');
           break;
         case hotkeys.prev:
           evt.preventDefault();
+          evt.stopPropagation();
           this.bus.emit('ui:prev');
           break;
         case hotkeys.next:
           evt.preventDefault();
+          evt.stopPropagation();
           this.bus.emit('ui:next');
           break;
         case hotkeys.faster:
           evt.preventDefault();
+          evt.stopPropagation();
           this.bus.emit('ui:wpm-delta', { delta: 25 });
           break;
         case hotkeys.slower:
           evt.preventDefault();
+          evt.stopPropagation();
           this.bus.emit('ui:wpm-delta', { delta: -25 });
           break;
         case hotkeys.nextChapter:
           evt.preventDefault();
+          evt.stopPropagation();
           this.bus.emit('ui:next-chapter');
           break;
         case hotkeys.prevChapter:
           evt.preventDefault();
+          evt.stopPropagation();
           this.bus.emit('ui:prev-chapter');
           break;
         case hotkeys.close:
           evt.preventDefault();
+          evt.stopPropagation();
           this.bus.emit('ui:close');
           break;
       }
@@ -2071,6 +2102,7 @@
     }
 
     _teardownSession() {
+      if (document.fullscreenElement) document.exitFullscreen?.();
       this.reader.stop();
       this.scrollEngine.stop();
       this.scrollEngine.unwatchUserScroll();
@@ -2147,6 +2179,19 @@
           this.toolbar.element.classList.remove('usr-pos-top', 'usr-pos-bottom');
           this.toolbar.element.classList.add(next === 'top' ? 'usr-pos-top' : 'usr-pos-bottom');
           this._mountToolbar();
+        }
+      });
+
+      this.bus.on('ui:toggle-fullscreen', () => {
+        // Ganzseiten-Vollbild statt nur den Container – Toolbar (an document.body
+        // gehängt) und Container bleiben so beide sichtbar, da beide Nachfahren
+        // von <html> sind (die Fullscreen API blendet alles andere aus).
+        if (document.fullscreenElement) {
+          document.exitFullscreen?.();
+        } else {
+          document.documentElement.requestFullscreen?.().catch((err) => {
+            console.error(`[${NS}] Vollbild fehlgeschlagen:`, err);
+          });
         }
       });
 
