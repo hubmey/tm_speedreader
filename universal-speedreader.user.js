@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Universal SpeedReader
 // @namespace    https://github.com/hubmey/tm_speedreader.git
-// @version      1.8.0
+// @version      1.9.0
 // @description  RSVP/ORP Speedreader für nahezu jede textbasierte Webseite, mit synchronem Auto-Scroll des Originalcontainers.
 // @author       Hubertus Meyer
 // @match        *://*/*
@@ -893,6 +893,9 @@
       this._targetTop = null;
       this._rafId = null;
       this._easing = 0.18; // Anteil der Distanz, der pro Frame zurückgelegt wird.
+      this._lastSetScrollTop = null;
+      this._userScrollHandler = null;
+      this._userScrollTarget = null;
     }
 
     /** Ermittelt das nächste scrollbare Vorfahrenelement (oder window). */
@@ -909,6 +912,37 @@
 
     attach(container) {
       this._scrollParent = ScrollEngine.findScrollParent(container);
+    }
+
+    /**
+     * Erkennt manuelles Scrollen durch den Nutzer (Mausrad/Touch/Scrollbar),
+     * unterscheidet es von unserer eigenen programmatischen Animation durch
+     * Abgleich mit dem zuletzt selbst gesetzten scrollTop. Bei Erkennung wird
+     * die eigene Animation sofort abgebrochen (Nutzer-Scroll nicht blockiert)
+     * und der Callback aufgerufen (z. B. um den Reader zu pausieren).
+     */
+    watchUserScroll(onUserScroll) {
+      this.unwatchUserScroll();
+      if (!this._scrollParent) return;
+      const isWindowScroller = this._scrollParent === document.scrollingElement || this._scrollParent === document.documentElement;
+      const target = isWindowScroller ? window : this._scrollParent;
+
+      this._userScrollHandler = () => {
+        const current = this._getScrollTop();
+        if (this._lastSetScrollTop != null && Math.abs(current - this._lastSetScrollTop) < 2) return;
+        this.stop();
+        onUserScroll();
+      };
+      target.addEventListener('scroll', this._userScrollHandler, { passive: true });
+      this._userScrollTarget = target;
+    }
+
+    unwatchUserScroll() {
+      if (this._userScrollTarget && this._userScrollHandler) {
+        this._userScrollTarget.removeEventListener('scroll', this._userScrollHandler);
+      }
+      this._userScrollHandler = null;
+      this._userScrollTarget = null;
     }
 
     /** Setzt das Scroll-Ziel anhand eines Blocks/Elements und startet die Animation. */
@@ -953,6 +987,7 @@
     }
 
     _setScrollTop(value) {
+      this._lastSetScrollTop = value;
       if (this._scrollParent === document.scrollingElement || this._scrollParent === document.documentElement) {
         window.scrollTo({ top: value, behavior: 'auto' });
       } else {
@@ -1277,6 +1312,7 @@
 
       .${NS}-display {
         position: relative; display: flex; align-items: center; justify-content: center;
+        overflow: hidden;
         height: 64px; font-size: 30px; font-weight: 600; letter-spacing: .5px;
         font-family: 'Courier New', ui-monospace, monospace;
         border-bottom: 1px solid rgba(255,255,255,.08);
@@ -1285,7 +1321,7 @@
       .${NS}-toolbar.usr-theme-light .${NS}-display { border-bottom-color: rgba(0,0,0,.08); }
       .${NS}-refline { position: absolute; top: 0; bottom: 0; width: 2px; background: #ef4444; opacity: .6; }
       .${NS}-orp-focus { color: #ef4444; }
-      .${NS}-word-before, .${NS}-word-after { opacity: .92; white-space: pre; }
+      .${NS}-word-before, .${NS}-word-after { opacity: .92; white-space: pre; min-width: 0; }
       /* Fixpunkt-Modus: Fokusbuchstabe bleibt stets an fester Bildschirmposition (Mitte),
          indem Vor-/Nachwort-Spalten gleich breit sind und sich das Wort darunter verschiebt. */
       .${NS}-display.usr-orp-fixed .${NS}-word-before { flex: 1 1 0; text-align: right; }
@@ -1616,7 +1652,34 @@
       });
     }
 
+    /** Misst die Breite von Text bei gegebener Schriftgröße via Canvas (kein DOM-Reflow nötig). */
+    _measureTextWidth(text, fontSize) {
+      if (!this._measureCtx) this._measureCtx = document.createElement('canvas').getContext('2d');
+      this._measureCtx.font = `600 ${fontSize}px 'Courier New', ui-monospace, monospace`;
+      return this._measureCtx.measureText(text).width;
+    }
+
+    /**
+     * Sehr lange (zusammengesetzte/mit Bindestrich getrennte) Wörter würden bei
+     * fester Schriftgröße über die Toolbar hinauslaufen. Statt umzubrechen (das
+     * würde den Ein-Fixationspunkt-Vorteil von RSVP zunichtemachen), wird die
+     * Schriftgröße für dieses eine Wort so weit verkleinert, dass es einzeilig
+     * bleibt – Referenzlinie/ORP-Zentrierung bleiben dadurch gültig.
+     */
+    _applyFittingFontSize(text) {
+      const baseFontSize = this.settings.get('displayFontSize');
+      const availableWidth = Math.max(0, this.display.clientWidth - 24);
+      // + letter-spacing (0.5px/Zeichen, siehe CSS), das Canvas measureText nicht einrechnet.
+      const fullWidth = this._measureTextWidth(text, baseFontSize) + text.length * 0.5;
+      const minFontSize = Math.max(12, baseFontSize * 0.35);
+      const fontSize = fullWidth > availableWidth && availableWidth > 0
+        ? Math.max(minFontSize, baseFontSize * (availableWidth / fullWidth))
+        : baseFontSize;
+      this.display.style.fontSize = `${fontSize}px`;
+    }
+
     _renderToken({ token, index, total, progress, remainingSeconds, chapter }) {
+      this._applyFittingFontSize(token.text);
       const orpEnabled = this.settings.get('orpEnabled');
       if (orpEnabled) {
         const { before, focus, after } = ORP.split(token.text);
@@ -1921,6 +1984,7 @@
         }
         this.reader.loadBlocks(blocks);
         this.scrollEngine.attach(container);
+        this.scrollEngine.watchUserScroll(() => this.reader.pause());
 
         this.toolbar = new Toolbar(this.bus, this.settings);
         this._mountToolbar();
@@ -1999,9 +2063,17 @@
       });
     }
 
+    _resyncScroll() {
+      const entry = this.reader.stream[this.reader.index];
+      if (this.settings.get('autoScroll') && entry?.block?.element) {
+        this.scrollEngine.scrollToElement(entry.block.element);
+      }
+    }
+
     _teardownSession() {
       this.reader.stop();
       this.scrollEngine.stop();
+      this.scrollEngine.unwatchUserScroll();
       this.keyboard.disable();
       this._mutationObserver?.disconnect();
       this.domParser.dispose();
@@ -2016,7 +2088,12 @@
     // --- Bus-Handler ----------------------------------------------------------
 
     _bindBusHandlers() {
-      this.bus.on('ui:toggle', () => this.reader.togglePause());
+      this.bus.on('ui:toggle', () => {
+        this.reader.togglePause();
+        // Nach manuellem Scrollen (das den Reader pausiert hat) beim Fortsetzen
+        // wieder zur korrekten Leseposition zurückscrollen.
+        if (this.reader.state === ReaderState.PLAYING) this._resyncScroll();
+      });
       this.bus.on('ui:stop', () => { this.reader.stop(); this._persistPosition(); });
       this.bus.on('ui:next', () => { this.reader.pause(); this.reader.next(); });
       this.bus.on('ui:prev', () => { this.reader.pause(); this.reader.prev(); });
