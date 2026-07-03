@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Universal SpeedReader
 // @namespace    https://github.com/hubmey/tm_speedreader.git
-// @version      1.10.1
+// @version      1.10.2
 // @description  RSVP/ORP Speedreader für nahezu jede textbasierte Webseite, mit synchronem Auto-Scroll des Originalcontainers.
 // @author       Hubertus Meyer
 // @match        *://*/*
@@ -928,6 +928,7 @@
       const target = isWindowScroller ? window : this._scrollParent;
 
       this._userScrollHandler = () => {
+        if (this._suppressUntil && performance.now() < this._suppressUntil) return;
         const current = this._getScrollTop();
         if (this._lastSetScrollTop != null && Math.abs(current - this._lastSetScrollTop) < 2) return;
         this.stop();
@@ -935,6 +936,16 @@
       };
       target.addEventListener('scroll', this._userScrollHandler, { passive: true });
       this._userScrollTarget = target;
+    }
+
+    /**
+     * Blendet die Nutzer-Scroll-Erkennung für kurze Zeit aus. Sicherheitsnetz für
+     * Browser (v. a. Safari), bei denen preventDefault() auf Pfeiltasten/Space
+     * das native Scrollen nicht immer zuverlässig unterdrückt – ein dadurch
+     * ausgelöster minimaler Restscroll soll den Reader nicht fälschlich pausieren.
+     */
+    suppressUserScrollDetection(ms = 250) {
+      this._suppressUntil = performance.now() + ms;
     }
 
     unwatchUserScroll() {
@@ -1809,12 +1820,16 @@
     enable() {
       if (this._active) return;
       this._active = true;
-      document.addEventListener('keydown', this._handler, true);
+      // Auf window statt document registrieren: In Safari greift preventDefault()
+      // auf einem document-Capture-Listener bei Pfeiltasten/Space teils nicht
+      // zuverlässig gegen das native Scrollen – window ist die früheste mögliche
+      // Capture-Stufe und wird von WebKit konsistenter respektiert.
+      window.addEventListener('keydown', this._handler, { capture: true, passive: false });
     }
 
     disable() {
       this._active = false;
-      document.removeEventListener('keydown', this._handler, true);
+      window.removeEventListener('keydown', this._handler, { capture: true });
     }
 
     _handleKeydown(evt) {
@@ -1871,7 +1886,12 @@
           evt.stopPropagation();
           this.bus.emit('ui:close');
           break;
+        default:
+          return;
       }
+      // Sicherheitsnetz für Browser, die einen minimalen Restscroll trotz
+      // preventDefault() durchlassen (siehe Safari-Hinweis oben in enable()).
+      this.bus.emit('ui:hotkey-fired');
     }
   }
 
@@ -2174,6 +2194,8 @@
         this.settings.set('highlightSourceWord', value);
         if (!value) this.sourceHighlighter.clear();
       });
+
+      this.bus.on('ui:hotkey-fired', () => this.scrollEngine.suppressUserScrollDetection());
 
       this.bus.on('ui:font-size-set', ({ size }) => {
         this.settings.set('displayFontSize', size);
