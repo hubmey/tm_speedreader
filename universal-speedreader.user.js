@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Universal SpeedReader
 // @namespace    https://github.com/hubmey/tm_speedreader.git
-// @version      1.10.0
+// @version      1.10.1
 // @description  RSVP/ORP Speedreader für nahezu jede textbasierte Webseite, mit synchronem Auto-Scroll des Originalcontainers.
 // @author       Hubertus Meyer
 // @match        *://*/*
@@ -1314,6 +1314,18 @@
       .${NS}-toolbar.usr-pos-bottom { bottom: 8px; }
       .${NS}-toolbar.usr-theme-light { --usr-bg: #f9fafb; --usr-fg: #111827; box-shadow: 0 4px 18px rgba(0,0,0,.12); }
 
+      /* Vollbild: der Reader selbst füllt die komplette Seite statt einer kleinen
+         Leiste – große, vertikal zentrierte Wortanzeige, Steuerung unten kompakt. */
+      .${NS}-toolbar.usr-fullscreen-mode {
+        inset: 0 !important; top: 0 !important; left: 0 !important; right: 0 !important; bottom: 0 !important;
+        transform: none !important; width: 100vw !important; height: 100vh !important; max-width: none;
+        border-radius: 0; margin: 0; padding: 32px 5vw;
+        justify-content: center;
+      }
+      .${NS}-toolbar.usr-fullscreen-mode .${NS}-display {
+        flex: 1 1 auto; min-height: 0; height: auto; border-bottom: none;
+      }
+
       .${NS}-display {
         position: relative; display: flex; align-items: center; justify-content: center;
         overflow: hidden;
@@ -1661,10 +1673,15 @@
       });
 
       // Icon/Zustand nachführen, auch wenn Vollbild anders verlassen wird (z. B. ESC).
+      // Der Reader selbst füllt dabei die komplette Seite aus (nicht nur das
+      // Browser-Chrome wird via Fullscreen API versteckt) – die Toolbar wechselt
+      // in ein großflächiges Layout mit deutlich größerer Wortanzeige.
+      this._fullscreenActive = false;
       this._fullscreenChangeHandler = () => {
-        const active = !!document.fullscreenElement;
-        this.btnFullscreen.textContent = active ? '⛶ ✕' : '⛶';
-        this.btnFullscreen.classList.toggle('usr-active', active);
+        this._fullscreenActive = !!document.fullscreenElement;
+        this.btnFullscreen.textContent = this._fullscreenActive ? '⛶ ✕' : '⛶';
+        this.btnFullscreen.classList.toggle('usr-active', this._fullscreenActive);
+        this.element.classList.toggle('usr-fullscreen-mode', this._fullscreenActive);
       };
       document.addEventListener('fullscreenchange', this._fullscreenChangeHandler);
     }
@@ -1684,7 +1701,11 @@
      * bleibt – Referenzlinie/ORP-Zentrierung bleiben dadurch gültig.
      */
     _applyFittingFontSize(text) {
-      const baseFontSize = this.settings.get('displayFontSize');
+      // Im Fullscreen-Modus deutlich größer starten (die Anzeigefläche ist dort
+      // ohnehin fast bildschirmgroß) – die konfigurierte Basisgröße bleibt dabei
+      // proportional maßgeblich, damit die Nutzer-Einstellung weiter Wirkung zeigt.
+      const configuredFontSize = this.settings.get('displayFontSize');
+      const baseFontSize = this._fullscreenActive ? Math.round(configuredFontSize * 2.4) : configuredFontSize;
       const availableWidth = Math.max(0, this.display.clientWidth - 24);
       // + letter-spacing (0.5px/Zeichen, siehe CSS), das Canvas measureText nicht einrechnet.
       const fullWidth = this._measureTextWidth(text, baseFontSize) + text.length * 0.5;
