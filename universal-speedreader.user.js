@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Universal SpeedReader
 // @namespace    https://github.com/hubmey/tm_speedreader.git
-// @version      1.11.1
+// @version      1.12.0
 // @description  RSVP/ORP Speedreader für nahezu jede textbasierte Webseite, mit synchronem Auto-Scroll des Originalcontainers.
 // @author       Hubertus Meyer
 // @match        *://*/*
@@ -89,6 +89,7 @@
     maxFontSize: 72,
     focusMode: 'off',         // 'off' | 'dim' | 'blur' | 'hide' – Behandlung von Elementen außerhalb des Containers
     highlightSourceWord: true, // aktuelles Wort dezent im Original-Quelltext hervorheben
+    listZebraStripes: false,  // Wortanzeige-Hintergrund je nach <li>-Position abwechselnd einfärben
     superFocusMode: false,    // nur das aktuelle Wort anzeigen, komplette Toolbar-Chrome ausblenden
     showStatsOnFinish: true,  // Zusammenfassung nach Sitzungsende anzeigen
     autoCloseAfterFinish: false, // Reader nach Sitzungsende automatisch schließen
@@ -121,8 +122,11 @@
       nextChapter: 'PageDown',
       prevChapter: 'PageUp',
       close: 'Escape',
-      fullscreen: 'KeyF',
-      superFocus: 'KeyZ',
+      // Buchstaben-Hotkeys als evt.key (layout-abhängig, z. B. 'f'/'z'), NICHT
+      // evt.code – "KeyZ" ist die QWERTY-Position, die auf QWERTZ-Tastaturen
+      // (Y/Z vertauscht) nie durch Drücken der Z-Taste ausgelöst würde.
+      fullscreen: 'f',
+      superFocus: 'z',
     },
     lastPosition: {}, // { [urlHash]: { tokenIndex, url, title, timestamp } }
   });
@@ -172,14 +176,15 @@
     return svg;
   }
 
-  /** Menschenlesbare Kurzform für KeyboardEvent.code-Werte, für Tooltips/Hints. */
+  /** Menschenlesbare Kurzform für Hotkey-Werte (evt.code ODER einzelne evt.key-Buchstaben), für Tooltips/Hints. */
   const HOTKEY_LABELS = {
     Space: 'Leertaste', ArrowLeft: '←', ArrowRight: '→', ArrowUp: '↑', ArrowDown: '↓',
     PageUp: 'Bild ↑', PageDown: 'Bild ↓', Escape: 'Esc',
-    KeyF: 'F', KeyZ: 'Z',
   };
   function hotkeyLabel(code) {
-    return HOTKEY_LABELS[code] || code || '';
+    if (HOTKEY_LABELS[code]) return HOTKEY_LABELS[code];
+    if (code && code.length === 1) return code.toUpperCase();
+    return code || '';
   }
 
   // ===========================================================================
@@ -654,6 +659,10 @@
       CITE: BlockType.CITATION,
     };
 
+    /** CSS-Selektor aller bekannten Block-Tags, zur Prüfung ob ein generischer
+     * Container (z. B. <div>) noch "echte" Block-Nachfahren enthält. */
+    static KNOWN_BLOCK_SELECTOR = Object.keys(DomParser.BLOCK_TAG_MAP).join(',');
+
     constructor(eventBus, settings) {
       this.bus = eventBus;
       this.settings = settings;
@@ -717,7 +726,7 @@
       }
 
       const mapped = DomParser.BLOCK_TAG_MAP[element.tagName];
-      if (!mapped) return null;
+      if (!mapped) return this._classifyGenericFallback(element);
 
       switch (mapped) {
         case BlockType.IMAGE: {
@@ -776,6 +785,20 @@
           return this._makeBlock(element, mapped, factors.default);
         }
       }
+    }
+
+    /**
+     * Fallback für Elemente ohne bekannte Semantik (z. B. <div class="stamp">Text</div>
+     * statt <p>Text</p>, wie es manche CMS/Fachportale ausgeben). Ohne diesen Fallback
+     * würde solcher "loser" Text nie erfasst, weil der TreeWalker nur Elemente besucht
+     * und reiner Text nur über textContent eines KLASSIFIZIERTEN Vorfahren erfasst wird.
+     * Greift nur, wenn der Container selbst keine weiteren block-fähigen Nachfahren
+     * enthält – sonst würde deren Inhalt doppelt erfasst (die werden separat besucht).
+     */
+    _classifyGenericFallback(element) {
+      if (DomParser.SKIP_TAGS.has(element.tagName)) return null;
+      if (element.querySelector?.(DomParser.KNOWN_BLOCK_SELECTOR)) return null;
+      return this._makeBlock(element, BlockType.GENERIC_TEXT, this.settings.get('speedFactors').default);
     }
 
     _isFootnote(element) {
@@ -1434,7 +1457,13 @@
         font-family: 'Courier New', ui-monospace, monospace;
         border-bottom: 1px solid rgba(255,255,255,.08);
         padding-bottom: 8px;
+        border-radius: 8px;
+        transition: background-color .15s ease;
       }
+      /* Listen-Zebrastreifen: abwechselnder, dezenter Hintergrund je nach <li>-Position,
+       damit beim Vorlesen erkennbar bleibt, wo ein Listenpunkt endet/beginnt. */
+      .${NS}-display.usr-zebra-a { background-color: rgba(79, 70, 229, .14); }
+      .${NS}-display.usr-zebra-b { background-color: rgba(16, 185, 129, .14); }
       .${NS}-toolbar.usr-theme-light .${NS}-display { border-bottom-color: rgba(0,0,0,.08); }
       .${NS}-refline { position: absolute; top: 0; bottom: 0; width: 2px; background: #ef4444; opacity: .6; }
       .${NS}-orp-focus { color: #ef4444; }
@@ -1742,6 +1771,7 @@
       this.toggleCitations = this._makeToggle('Quellen überspr.', 'skipCitations', 'ui:toggle-citations');
       this.toggleTables = this._makeToggle('Tabellen überspr.', 'skipTables', 'ui:toggle-tables');
       this.toggleSourceHighlight = this._makeToggle('Quelltext markieren', 'highlightSourceWord', 'ui:toggle-source-highlight');
+      this.toggleListZebra = this._makeToggle('Listen-Streifen', 'listZebraStripes', 'ui:toggle-list-zebra');
       this.toggleClickSound = this._makeToggle('Klickton', 'clickSoundEnabled', 'ui:toggle-click-sound');
       this.toggleShowStats = this._makeToggle('Zusammenfassung', 'showStatsOnFinish', 'ui:toggle-show-stats');
       this.toggleAutoClose = this._makeToggle('Autom. schließen', 'autoCloseAfterFinish', 'ui:toggle-auto-close');
@@ -1780,13 +1810,13 @@
         Utils.el('span', { class: `${NS}-stat`, text: 'Schrift' }), this.fontSizeSlider, this.statFontSize,
         Utils.el('span', { class: `${NS}-stat`, text: 'Platzh.-Pause' }), this.placeholderPauseSlider, this.statPlaceholderPause,
         Utils.el('div', { class: `${NS}-spacer` }),
-        this.btnSuperFocus, this.btnFullscreen, this.togglePosition, this.btnClose,
+        this.btnFullscreen, this.togglePosition,
       ]);
 
       const toggleRow = Utils.el('div', { class: `${NS}-row ${NS}-superfocus-hide` }, [
         this.toggleOrp, this.toggleOrpFixed, this.toggleScroll, this.toggleAdaptive, this.togglePunct,
         this.toggleCaptions, this.toggleCitations, this.toggleTables, this.toggleSourceHighlight,
-        this.toggleClickSound, this.clickSoundVariantSelect, this.focusModeSelect,
+        this.toggleListZebra, this.toggleClickSound, this.clickSoundVariantSelect, this.focusModeSelect,
       ]);
 
       const statsRow = Utils.el('div', { class: `${NS}-row ${NS}-superfocus-hide` }, [
@@ -1796,8 +1826,16 @@
 
       this.progressTrack.classList.add(`${NS}-superfocus-hide`);
 
+      // Superfokus-Toggle und Schließen-Button bleiben IMMER sichtbar (eigene Zeile,
+      // nicht Teil von usr-superfocus-hide) – sonst gäbe es im Superfokus-Modus keinen
+      // Ausweg mehr, falls auch das Tastaturkürzel aus irgendeinem Grund nicht greift.
+      const exitRow = Utils.el('div', { class: `${NS}-row ${NS}-exit-row` }, [
+        Utils.el('div', { class: `${NS}-spacer` }),
+        this.btnSuperFocus, this.btnClose,
+      ]);
+
       return Utils.el('div', { class: `${NS}-toolbar ${NS}-ui ${posClass} ${themeClass}${s.get('superFocusMode') ? ' usr-superfocus' : ''}` }, [
-        this.display, this.progressTrack, controlsRow, toggleRow, statsRow,
+        this.display, this.progressTrack, controlsRow, toggleRow, statsRow, exitRow,
       ]);
     }
 
@@ -1896,8 +1934,27 @@
       this.display.style.fontSize = `${fontSize}px`;
     }
 
-    _renderToken({ token, index, total, progress, remainingSeconds, chapter }) {
+    /**
+     * Färbt den Anzeigehintergrund abwechselnd ein, solange innerhalb einer <li>
+     * gelesen wird (1., 3., 5. … Element = Variante A, 2., 4., 6. … = Variante B),
+     * damit beim Vorlesen von Listen erkennbar bleibt, wo ein Punkt endet und der
+     * nächste beginnt. Außerhalb von Listen wieder normaler Hintergrund.
+     */
+    _applyListZebra(block, localIndex) {
+      this.display.classList.remove(`${NS}-zebra-a`, `${NS}-zebra-b`);
+      if (!this.settings.get('listZebraStripes') || block?.type !== BlockType.LIST || localIndex == null) return;
+      const range = block.getWordRanges()[localIndex];
+      const li = range?.startNode?.parentElement?.closest('li');
+      if (!li?.parentElement) return;
+      const siblings = [...li.parentElement.children].filter((c) => c.tagName === 'LI');
+      const liIndex = siblings.indexOf(li);
+      if (liIndex < 0) return;
+      this.display.classList.add(liIndex % 2 === 0 ? `${NS}-zebra-a` : `${NS}-zebra-b`);
+    }
+
+    _renderToken({ token, block, localIndex, index, total, progress, remainingSeconds, chapter }) {
       this._applyFittingFontSize(token.text);
+      this._applyListZebra(block, localIndex);
       const orpEnabled = this.settings.get('orpEnabled');
       if (orpEnabled) {
         const { before, focus, after } = ORP.split(token.text);
@@ -2066,18 +2123,23 @@
           evt.stopPropagation();
           this.bus.emit('ui:close');
           break;
-        case hotkeys.fullscreen:
-          evt.preventDefault();
-          evt.stopPropagation();
-          this.bus.emit('ui:toggle-fullscreen');
-          break;
-        case hotkeys.superFocus:
-          evt.preventDefault();
-          evt.stopPropagation();
-          this.bus.emit('ui:toggle-super-focus');
-          break;
-        default:
-          return;
+        default: {
+          // Buchstaben-Hotkeys separat über evt.key matchen (layout-abhängig,
+          // z. B. 'f'/'z') statt über evt.code (QWERTY-Tastenposition) – siehe
+          // Kommentar bei DEFAULT_SETTINGS.hotkeys.fullscreen weiter oben.
+          const key = (evt.key || '').toLowerCase();
+          if (key && key === hotkeys.fullscreen) {
+            evt.preventDefault();
+            evt.stopPropagation();
+            this.bus.emit('ui:toggle-fullscreen');
+          } else if (key && key === hotkeys.superFocus) {
+            evt.preventDefault();
+            evt.stopPropagation();
+            this.bus.emit('ui:toggle-super-focus');
+          } else {
+            return;
+          }
+        }
       }
       // Sicherheitsnetz für Browser, die einen minimalen Restscroll trotz
       // preventDefault() durchlassen (siehe Safari-Hinweis oben in enable()).
@@ -2384,6 +2446,8 @@
         this.settings.set('highlightSourceWord', value);
         if (!value) this.sourceHighlighter.clear();
       });
+
+      this.bus.on('ui:toggle-list-zebra', ({ value }) => this.settings.set('listZebraStripes', value));
 
       this.bus.on('ui:hotkey-fired', () => this.scrollEngine.suppressUserScrollDetection());
 
