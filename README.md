@@ -85,8 +85,7 @@ Vollbild, Position und Schließen.
   und springt beim Fortsetzen zurück zur Leseposition.
 - Optionaler **Klickton** je Wort mit mehreren Klangfarben.
 
-  > 🥚🎵 Tipp: Probier ruhig alle Klangfarben aus — bei einer davon könntest du
-  > überrascht werden. Es könnte dir gefallen. 😉
+  > 🥚🎵 Probier doch mal den Tonmodus **Klassik** — Es könnte dir gefallen. 😉
 - **Statistik** nach Sitzungsende (Gesamtzeit, Ø-WPM, effektive WPM, Wortzahl,
   geschätzte Zeitersparnis) — optional, mit optionalem Auto-Schließen.
 - Einstellbare Schriftgröße, Toolbar-Position und Theme.
