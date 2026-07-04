@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Universal SpeedReader
 // @namespace    https://github.com/hubmey/tm_speedreader.git
-// @version      1.13.0
+// @version      1.16.0
 // @description  RSVP/ORP Speedreader für nahezu jede textbasierte Webseite, mit synchronem Auto-Scroll des Originalcontainers.
 // @author       Hubertus Meyer
 // @match        *://*/*
@@ -279,9 +279,19 @@
      * Ahnen "erdrückter" Knoten hat immer eine 0x0-Rect), daher genügt die
      * Prüfung des direkten Textknoten-Elternteils.
      */
-    static visibleTextContent(element) {
-      let text = '';
-      let lastBlock = null;
+    /**
+     * Einmaliger Durchlauf durch die sichtbaren Textknoten eines Elements, der
+     * PARALLEL Rohwörter und ihre DOM-Ranges liefert (gleicher Index = gleiches
+     * Wort). Das ist die einzige Stelle, an der Wortgrenzen (Whitespace +
+     * Block-Element-Wechsel, z. B. dicht gepackte <li>/<p> ohne Zeilenumbruch
+     * im Markup) bestimmt werden – Tokenizer-Eingabe und Highlight-/Zebra-Ranges
+     * greifen beide auf dieses Ergebnis zu und können dadurch nie mehr
+     * auseinanderdriften (vorher: zwei separat gepflegte TreeWalker-Implementierungen,
+     * die bei sehr verschachteltem/komplexem Markup lautlos divergieren konnten).
+     */
+    static extractWords(element) {
+      const words = [];
+      const ranges = [];
       const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT, {
         acceptNode: (node) => {
           const parent = node.parentElement;
@@ -290,20 +300,47 @@
           return Utils.isElementVisible(parent) ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_REJECT;
         },
       });
+
+      let buffer = '';
+      let currentStart = null;
+      let lastNode = null;
+      let lastBlock = null;
+      const flush = (endNode, endOffset) => {
+        if (currentStart && buffer) {
+          words.push(buffer);
+          ranges.push({ startNode: currentStart.node, startOffset: currentStart.offset, endNode, endOffset });
+        }
+        buffer = '';
+        currentStart = null;
+      };
+
       let node;
       while ((node = walker.nextNode())) {
-        // Textknoten ohne trennenden Whitespace im Markup (z. B. dicht gepackte
-        // <li>-Elemente ohne Zeilenumbruch dazwischen) würden sonst zu einem
-        // einzigen verklebten "Wort" verschmelzen (Wortende + nächster Zeilenanfang).
-        // Beim Wechsel des umschließenden Block-Elements daher eine Wortgrenze erzwingen.
         const block = node.parentElement.closest(Utils.BLOCK_TAGS) || element;
-        if (lastBlock !== null && block !== lastBlock && text && !/\s$/.test(text)) {
-          text += ' ';
+        if (lastBlock !== null && block !== lastBlock) {
+          flush(lastNode, lastNode ? lastNode.nodeValue.length : 0);
         }
-        text += node.nodeValue;
+        lastNode = node;
         lastBlock = block;
+
+        const text = node.nodeValue.replace(/ /g, ' ');
+        for (let i = 0; i < text.length; i++) {
+          if (/\s/.test(text[i])) {
+            flush(node, i);
+          } else {
+            if (currentStart === null) currentStart = { node, offset: i };
+            buffer += text[i];
+          }
+        }
       }
-      return text;
+      if (lastNode) flush(lastNode, lastNode.nodeValue.length);
+
+      return { words, ranges };
+    }
+
+    /** Bequemlichkeits-Wrapper um extractWords() für Aufrufer, die nur den Text brauchen (keine Ranges). */
+    static visibleTextContent(element) {
+      return Utils.extractWords(element).words.join(' ');
     }
 
     /** Erstellt ein DOM-Element mit Attributen/Kindern in einem Aufruf (kein Framework nötig). */
@@ -535,80 +572,48 @@
    * gecacht, um Reflows zu minimieren).
    */
   class Block {
-    constructor({ element, type, text, speedFactor, highlightable = false, isPlaceholder = false }) {
+    constructor({ element, type, text, words, ranges, speedFactor, highlightable = false, isPlaceholder = false }) {
       this.id = Utils.uuid();
       this.element = element;
       this.type = type;
-      this.tokens = Tokenizer.tokenizeText(text);
-      this.charCount = text.length;
-      this.wordCount = this.tokens.length;
       this.speedFactor = speedFactor;
       this.visible = true;
       this.highlightable = highlightable;
       this.isPlaceholder = isPlaceholder;
       this._cachedRect = null;
-      this._wordRanges = null;
+
+      if (highlightable && words) {
+        // Tokens und Ranges stammen aus DEMSELBEN Utils.extractWords()-Durchlauf
+        // (gleicher Index = gleiches Wort) und koennen dadurch nie mehr auseinander-
+        // driften - vorher zwei separat gepflegte TreeWalker-Implementierungen,
+        // die bei sehr verschachteltem/komplexem Markup (viele Custom-Elemente,
+        // Icons, leere Anker etc.) lautlos divergieren und Highlighting/Zebra
+        // per Sicherheitsnetz stumm abschalten konnten.
+        this.tokens = [];
+        this._wordRanges = [];
+        words.forEach((w, i) => {
+          const tok = Tokenizer.tokenize(w);
+          if (tok) {
+            this.tokens.push(tok);
+            this._wordRanges.push(ranges[i]);
+          }
+        });
+        this.charCount = words.join(' ').length;
+      } else {
+        this.tokens = Tokenizer.tokenizeText(text);
+        this.charCount = text.length;
+        this._wordRanges = [];
+      }
+      this.wordCount = this.tokens.length;
     }
 
     /**
      * Liefert je Token eine DOM-Range, die exakt das entsprechende Wort im
-     * Original-Text abdeckt (für die Live-Hervorhebung im Quelltext).
-     * Nur für Blöcke möglich, deren Anzeigetext 1:1 aus element.textContent
-     * stammt (kein synthetischer/überschriebener Text wie bei Bild-Alt-Texten).
-     * Lazy berechnet und gecacht, da ein TreeWalker-Durchlauf nötig ist.
+     * Original-Text abdeckt (fuer die Live-Hervorhebung im Quelltext/Zebrastreifen).
+     * Nur fuer Bloecke moeglich, deren Anzeigetext 1:1 aus dem Element stammt
+     * (kein synthetischer/ueberschriebener Text wie bei Bild-Alt-Texten) - siehe Konstruktor.
      */
     getWordRanges() {
-      if (this._wordRanges) return this._wordRanges;
-      const ranges = [];
-      if (!this.highlightable) {
-        this._wordRanges = ranges;
-        return ranges;
-      }
-
-      const walker = document.createTreeWalker(this.element, NodeFilter.SHOW_TEXT, {
-        acceptNode: (node) => {
-          const parent = node.parentElement;
-          if (!parent) return NodeFilter.FILTER_REJECT;
-          if (parent.tagName === 'SCRIPT' || parent.tagName === 'STYLE') return NodeFilter.FILTER_REJECT;
-          // Muss exakt denselben Filter wie Utils.visibleTextContent() anwenden,
-          // sonst driften Ranges und Token-Liste auseinander (Wörter unter
-          // verschachtelten unsichtbaren Nachfahren dürfen hier nicht auftauchen).
-          return Utils.isElementVisible(parent) ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_REJECT;
-        },
-      });
-
-      let currentStart = null;
-      let lastNode = null;
-      let lastBlock = null;
-      const flush = (endNode, endOffset) => {
-        if (currentStart) ranges.push({ startNode: currentStart.node, startOffset: currentStart.offset, endNode, endOffset });
-        currentStart = null;
-      };
-
-      let node;
-      while ((node = walker.nextNode())) {
-        // Muss dieselbe Block-Grenzen-Logik wie Utils.visibleTextContent() anwenden,
-        // sonst driften Ranges und Token-Liste bei Listen/Tabellen etc. auseinander.
-        const block = node.parentElement.closest(Utils.BLOCK_TAGS) || this.element;
-        if (lastBlock !== null && block !== lastBlock && currentStart !== null && lastNode) {
-          flush(lastNode, lastNode.nodeValue.length);
-        }
-        lastNode = node;
-        lastBlock = block;
-        const text = node.nodeValue.replace(/ /g, ' ');
-        for (let i = 0; i < text.length; i++) {
-          if (/\s/.test(text[i])) {
-            flush(node, i);
-          } else if (currentStart === null) {
-            currentStart = { node, offset: i };
-          }
-        }
-      }
-      if (lastNode) flush(lastNode, lastNode.nodeValue.length);
-
-      // Sicherheitsnetz: bei Diskrepanz zur Tokenliste (z. B. exotische
-      // Whitespace-Sonderfälle) lieber keine Hervorhebung als eine falsche.
-      this._wordRanges = ranges.length === this.tokens.length ? ranges : [];
       return this._wordRanges;
     }
 
@@ -816,16 +821,26 @@
     _makeBlock(element, type, speedFactor, overrideText, isPlaceholder = false) {
       // Nur wenn der Anzeigetext 1:1 dem Element-Textinhalt entspricht (kein
       // überschriebener/synthetischer Text) kann später im Quelltext hervorgehoben werden.
-      const highlightable = overrideText === undefined;
-      const text = overrideText ?? (element.getAttribute?.('alt') || Utils.visibleTextContent(element) || '');
-      if (!text || !text.trim()) {
-        // Bilder ohne Alt-Text erhalten einen Platzhalter, damit sie als Pause im Lesefluss erscheinen.
+      // In diesem Fall Wörter+Ranges aus DEMSELBEN Durchlauf beziehen (Utils.extractWords),
+      // statt Text separat zu extrahieren und Ranges später nochmal eigenständig zu berechnen.
+      if (overrideText === undefined) {
+        const { words, ranges } = Utils.extractWords(element);
+        if (words.length === 0) {
+          if (type === BlockType.IMAGE || type === BlockType.VIDEO || type === BlockType.CANVAS || type === BlockType.SVG) {
+            return new Block({ element, type, text: '[Bild]', speedFactor, highlightable: false, isPlaceholder: true });
+          }
+          return null;
+        }
+        return new Block({ element, type, words, ranges, speedFactor, highlightable: true, isPlaceholder });
+      }
+
+      if (!overrideText || !overrideText.trim()) {
         if (type === BlockType.IMAGE || type === BlockType.VIDEO || type === BlockType.CANVAS || type === BlockType.SVG) {
           return new Block({ element, type, text: '[Bild]', speedFactor, highlightable: false, isPlaceholder: true });
         }
         return null;
       }
-      return new Block({ element, type, text, speedFactor, highlightable, isPlaceholder });
+      return new Block({ element, type, text: overrideText, speedFactor, highlightable: false, isPlaceholder });
     }
 
     /** Aktualisiert Block.visible via IntersectionObserver statt teurer Scroll-Handler. */
@@ -1056,10 +1071,24 @@
       this._scrollParent = null;
       this._targetTop = null;
       this._rafId = null;
-      this._easing = 0.18; // Anteil der Distanz, der pro Frame zurückgelegt wird.
+      // Zeitbasierte Glättung: Anteil der Restdistanz, der PRO SEKUNDE zurückgelegt
+      // wird (nicht pro Frame – dadurch framerate-unabhängig gleichmäßig statt
+      // ruckartig bei schwankender FPS). ~0.12 → sanftes Nachziehen.
+      this._smoothingPerSecond = 0.12;
+      this._lastFrameTs = null;
       this._lastSetScrollTop = null;
       this._userScrollHandler = null;
       this._userScrollTarget = null;
+      // Von der fixierten Toolbar verdeckte Randbereiche (px) – das Scroll-Ziel
+      // positioniert das aktuelle Wort in den FREIEN Bereich dazwischen, nie
+      // hinter die Toolbar.
+      this._reservedTop = 0;
+      this._reservedBottom = 0;
+    }
+
+    setReservedInsets(top, bottom) {
+      this._reservedTop = top || 0;
+      this._reservedBottom = bottom || 0;
     }
 
     /** Ermittelt das nächste scrollbare Vorfahrenelement (oder window). */
@@ -1120,19 +1149,40 @@
       this._userScrollTarget = null;
     }
 
-    /** Setzt das Scroll-Ziel anhand eines Blocks/Elements und startet die Animation. */
-    scrollToElement(element) {
+    /**
+     * Setzt das Scroll-Ziel und startet die Animation. Bevorzugt die exakte
+     * vertikale Position des aktuellen WORTES (via übergebener Range) statt nur
+     * des Blockanfangs – dadurch wandert das Ziel bei langen Absätzen Zeile für
+     * Zeile mit, statt am Blockanfang stehenzubleiben und dann sprunghaft zum
+     * nächsten Block zu springen (Hauptursache der ruckartigen Bewegung).
+     */
+    scrollToElement(element, wordRange) {
       if (!this._scrollParent || this.settings.get('scrollMode') === 'off') return;
       const ratio = this.settings.get('scrollTargetRatio');
       const parentRect = this._getParentViewportRect();
-      const elRect = element.getBoundingClientRect();
+
+      let refRect = null;
+      if (wordRange?.startNode) {
+        try {
+          const r = document.createRange();
+          r.setStart(wordRange.startNode, wordRange.startOffset);
+          r.setEnd(wordRange.endNode, wordRange.endOffset);
+          const rect = r.getBoundingClientRect();
+          if (rect.height > 0 || rect.width > 0) refRect = rect;
+        } catch { /* Range ungültig geworden – Fallback auf Element-Rect. */ }
+      }
+      if (!refRect) refRect = element.getBoundingClientRect();
 
       const currentScrollTop = this._getScrollTop();
-      const elementTopRelativeToParent = elRect.top - parentRect.top + currentScrollTop;
-      const desiredOffsetInViewport = parentRect.height * ratio;
+      const refTopRelativeToParent = refRect.top - parentRect.top + currentScrollTop;
+      // Wort im freien Bereich (Viewport minus oben/unten von der Toolbar
+      // verdeckte Zonen) an der eingestellten Ratio positionieren – so landet
+      // das aktuelle Wort nie hinter der Toolbar.
+      const freeHeight = Math.max(0, parentRect.height - this._reservedTop - this._reservedBottom);
+      const desiredOffsetInViewport = this._reservedTop + freeHeight * ratio;
 
       this._targetTop = Utils.clamp(
-        elementTopRelativeToParent - desiredOffsetInViewport,
+        refTopRelativeToParent - desiredOffsetInViewport,
         0,
         this._getScrollHeight() - parentRect.height
       );
@@ -1172,19 +1222,29 @@
 
     _ensureLoop() {
       if (this._rafId) return;
-      const step = () => {
+      this._lastFrameTs = null;
+      const step = (ts) => {
         if (this._targetTop == null) {
           this._rafId = null;
+          this._lastFrameTs = null;
           return;
         }
+        // Verstrichene Zeit seit letztem Frame → framerate-unabhängige Glättung.
+        const dt = this._lastFrameTs == null ? 1 / 60 : Math.min(0.1, (ts - this._lastFrameTs) / 1000);
+        this._lastFrameTs = ts;
+
         const current = this._getScrollTop();
         const delta = this._targetTop - current;
         if (Math.abs(delta) < 0.5) {
           this._setScrollTop(this._targetTop);
           this._rafId = null;
+          this._lastFrameTs = null;
           return;
         }
-        this._setScrollTop(current + delta * this._easing);
+        // Exponentielle Annäherung: Bruchteil der Restdistanz proportional zur
+        // vergangenen Zeit, damit die Geschwindigkeit unabhängig von der FPS ist.
+        const factor = 1 - Math.pow(1 - this._smoothingPerSecond, dt * 60);
+        this._setScrollTop(current + delta * factor);
         this._rafId = requestAnimationFrame(step);
       };
       this._rafId = requestAnimationFrame(step);
@@ -1194,6 +1254,7 @@
       if (this._rafId) cancelAnimationFrame(this._rafId);
       this._rafId = null;
       this._targetTop = null;
+      this._lastFrameTs = null;
     }
   }
 
@@ -1489,12 +1550,23 @@
       .${NS}-toolbar.usr-pos-top { top: 8px; }
       .${NS}-toolbar.usr-pos-bottom { bottom: 8px; }
       .${NS}-toolbar.usr-theme-light { --usr-bg: #f9fafb; --usr-fg: #111827; box-shadow: 0 4px 18px rgba(0,0,0,.12); }
-      /* Listen-Zebrastreifen: färbt den Reader/die Toolbar selbst (NICHT die
-         Wortanzeige-Box), abwechselnd je nach <li>-Position. */
-      .${NS}-toolbar.usr-zebra-a { background: #4338ca; }
-      .${NS}-toolbar.usr-zebra-b { background: #0f766e; }
-      .${NS}-toolbar.usr-theme-light.usr-zebra-a { background: #e0e7ff; }
-      .${NS}-toolbar.usr-theme-light.usr-zebra-b { background: #d1fae5; }
+      /* Listen-Zebra: nur ein schmaler Farbstreifen (10% Breite) links im
+         Textbereich (Wortanzeige), NICHT die ganze Toolbar. Ebene = Farbfamilie
+         (lvl-1/2/3, zyklisch), Parität der <li> = hell/dunkel (a/b). */
+      /* Dezente Helligkeitsabstufung EINER Farbe (Akzent-Indigo, hsl ~244):
+         Ebene = Helligkeitsstufe, <li>-Parität = kleiner Hell/Dunkel-Schritt. */
+      .${NS}-display.${NS}-zebra-lvl-1.${NS}-zebra-a { --usr-zebra: hsl(244 60% 42%); }
+      .${NS}-display.${NS}-zebra-lvl-1.${NS}-zebra-b { --usr-zebra: hsl(244 60% 52%); }
+      .${NS}-display.${NS}-zebra-lvl-2.${NS}-zebra-a { --usr-zebra: hsl(244 58% 60%); }
+      .${NS}-display.${NS}-zebra-lvl-2.${NS}-zebra-b { --usr-zebra: hsl(244 58% 70%); }
+      .${NS}-display.${NS}-zebra-lvl-3.${NS}-zebra-a { --usr-zebra: hsl(244 56% 78%); }
+      .${NS}-display.${NS}-zebra-lvl-3.${NS}-zebra-b { --usr-zebra: hsl(244 56% 86%); }
+      .${NS}-display[class*="${NS}-zebra-lvl"]::before {
+        content: ''; position: absolute; left: 0; top: 0; bottom: 0; width: 10%;
+        background: var(--usr-zebra, transparent);
+        border-radius: 8px 0 0 8px; pointer-events: none;
+        transition: background-color .12s ease;
+      }
 
       /* Vollbild: der Reader selbst füllt die komplette Seite statt einer kleinen
          Leiste – große, vertikal zentrierte Wortanzeige, Steuerung unten kompakt. */
@@ -1756,6 +1828,7 @@
       this.statPercent = Utils.el('span', { class: `${NS}-stat`, text: '0%' });
       this.statRemaining = Utils.el('span', { class: `${NS}-stat`, text: '--:--' });
       this.statWpm = Utils.el('span', { class: `${NS}-stat`, text: `${s.get('wpm')} WPM` });
+      this.statListLevel = Utils.el('span', { class: `${NS}-stat`, title: 'Verschachtelungstiefe der aktuellen Liste' });
 
       // Einheitliches Icon-Set statt gemischter Emoji/Symbole: einfacher Chevron = Wort-
       // Schritt, doppelter Chevron = Kapitel-Sprung – eindeutig unterscheidbar.
@@ -1898,7 +1971,7 @@
       ]);
 
       const statsRow = Utils.el('div', { class: `${NS}-row ${NS}-superfocus-hide` }, [
-        this.statChapter, this.statWords, this.statPercent, this.statRemaining,
+        this.statChapter, this.statWords, this.statPercent, this.statRemaining, this.statListLevel,
         this.toggleShowStats, this.toggleAutoClose,
       ]);
 
@@ -2039,9 +2112,14 @@
      * nächste beginnt. Außerhalb von Listen wieder normaler Hintergrund.
      */
     _applyListZebra(block, localIndex) {
-      // Färbt den Reader/die Toolbar selbst (this.element), NICHT die Wortanzeige-Box –
-      // die Wortanzeige (.usr-display) bleibt immer neutral/unverändert.
-      this.element.classList.remove(`${NS}-zebra-a`, `${NS}-zebra-b`);
+      // Dezenter, schmaler Farbstreifen links im Textbereich (Wortanzeige) statt
+      // Einfärbung des gesamten Readers – Ebene über Farbe, Position/Parität über
+      // hell/dunkel, ohne die ganze Toolbar umzufärben (weniger ablenkend).
+      this.display.classList.remove(
+        `${NS}-zebra-a`, `${NS}-zebra-b`,
+        `${NS}-zebra-lvl-1`, `${NS}-zebra-lvl-2`, `${NS}-zebra-lvl-3`
+      );
+      if (this.statListLevel) this.statListLevel.textContent = '';
       if (!this.settings.get('listZebraStripes') || block?.type !== BlockType.LIST || localIndex == null) return;
       const range = block.getWordRanges()[localIndex];
       const li = range?.startNode?.parentElement?.closest('li');
@@ -2049,7 +2127,18 @@
       const siblings = [...li.parentElement.children].filter((c) => c.tagName === 'LI');
       const liIndex = siblings.indexOf(li);
       if (liIndex < 0) return;
-      this.element.classList.add(liIndex % 2 === 0 ? `${NS}-zebra-a` : `${NS}-zebra-b`);
+
+      // Verschachtelungstiefe: Anzahl umschließender <li> bis zur Blockwurzel
+      // (die eigene <li> zählt als Ebene 1). Zusätzlich zur Hell/Dunkel-Alternierung
+      // je Ebene eine eigene Farbe, damit Nesting sichtbar bleibt statt nur "a/b".
+      let depth = 0;
+      for (let node = li; node && node !== block.element; node = node.parentElement) {
+        if (node.tagName === 'LI') depth++;
+      }
+      const level = ((depth - 1 + 3) % 3) + 1; // 1..3, zyklisch bei tieferer Verschachtelung
+
+      this.display.classList.add(`${NS}-zebra-lvl-${level}`, liIndex % 2 === 0 ? `${NS}-zebra-a` : `${NS}-zebra-b`);
+      if (this.statListLevel) this.statListLevel.textContent = '●'.repeat(depth) + ` Ebene ${depth}`;
     }
 
     _renderToken({ token, block, localIndex, index, total, progress, remainingSeconds, chapter }) {
@@ -2446,6 +2535,57 @@
       // Fest im Viewport (position: fixed via CSS) statt im Container verankert –
       // die Container-Referenz wird nicht mehr benötigt, top/bottom steuert nur noch die CSS-Klasse.
       if (!this.toolbar.element.isConnected) document.body.appendChild(this.toolbar.element);
+      this._reserveSpaceForToolbar();
+    }
+
+    /**
+     * Reserviert am oberen bzw. unteren Seitenrand Platz in Höhe der Toolbar,
+     * damit der fixierte Reader keinen Seiteninhalt dauerhaft verdeckt. Die
+     * Toolbar-Höhe variiert (Zeilenumbruch bei schmalem Viewport, Superfokus),
+     * daher via ResizeObserver nachgeführt. Im Vollbildmodus keine Reservierung
+     * (der Reader soll dort bewusst die ganze Seite einnehmen).
+     */
+    _reserveSpaceForToolbar() {
+      if (!this.toolbar) return;
+      const el = this.toolbar.element;
+      if (this._originalBodyPadding == null) {
+        this._originalBodyPadding = {
+          top: document.body.style.paddingTop,
+          bottom: document.body.style.paddingBottom,
+        };
+      }
+      const apply = () => {
+        // beide Seiten zunächst auf Ursprung zurücksetzen, dann die aktive setzen.
+        document.body.style.paddingTop = this._originalBodyPadding.top;
+        document.body.style.paddingBottom = this._originalBodyPadding.bottom;
+        if (el.classList.contains('usr-fullscreen-mode')) {
+          this.scrollEngine.setReservedInsets(0, 0);
+          return;
+        }
+        const gap = el.getBoundingClientRect().height + 16;
+        if (this.settings.get('toolbarPosition') === 'bottom') {
+          document.body.style.paddingBottom = `${gap}px`;
+          this.scrollEngine.setReservedInsets(0, gap);
+        } else {
+          document.body.style.paddingTop = `${gap}px`;
+          this.scrollEngine.setReservedInsets(gap, 0);
+        }
+      };
+      apply();
+      this._toolbarResizeObserver?.disconnect();
+      this._toolbarResizeObserver = new ResizeObserver(() => apply());
+      this._toolbarResizeObserver.observe(el);
+    }
+
+    _releaseToolbarSpace() {
+      this._toolbarResizeObserver?.disconnect();
+      this._toolbarResizeObserver = null;
+      this.scrollEngine.setReservedInsets(0, 0);
+      if (this._originalBodyPadding) {
+        document.body.style.paddingTop = this._originalBodyPadding.top;
+        document.body.style.paddingBottom = this._originalBodyPadding.bottom;
+        this._originalBodyPadding = null;
+      }
     }
 
     _observeMutations(container) {
@@ -2491,7 +2631,8 @@
     _resyncScroll() {
       const entry = this.reader.stream[this.reader.index];
       if (this.settings.get('autoScroll') && entry?.block?.element) {
-        this.scrollEngine.scrollToElement(entry.block.element);
+        const wordRange = entry.block.getWordRanges?.()[entry.localIndex];
+        this.scrollEngine.scrollToElement(entry.block.element, wordRange);
       }
     }
 
@@ -2503,6 +2644,7 @@
       this.keyboard.disable();
       this._mutationObserver?.disconnect();
       this.domParser.dispose();
+      this._releaseToolbarSpace();
       this.toolbar?.dispose();
       this.toolbar = null;
       this.container = null;
@@ -2631,7 +2773,8 @@
       // Synchronisiert bei jedem angezeigten Wort den Ursprungscontainer via ScrollEngine.
       this.bus.on('reader:token', (data) => {
         if (this.settings.get('autoScroll') && data.block?.element) {
-          this.scrollEngine.scrollToElement(data.block.element);
+          const wordRange = data.block.getWordRanges?.()[data.localIndex];
+          this.scrollEngine.scrollToElement(data.block.element, wordRange);
         }
         if (this.settings.get('highlightSourceWord')) {
           this.sourceHighlighter.highlight(data.block, data.localIndex);
