@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Universal SpeedReader
 // @namespace    https://github.com/hubmey/tm_speedreader.git
-// @version      1.22.0
+// @version      1.22.1
 // @description  RSVP/ORP Speedreader für nahezu jede textbasierte Webseite, mit synchronem Auto-Scroll des Originalcontainers.
 // @author       Hubertus Meyer
 // @match        *://*/*
@@ -960,6 +960,22 @@
       }
       if (this._ctx.state === 'suspended') this._ctx.resume();
       return this._ctx;
+    }
+
+    /**
+     * Wärmt die Audio-Ausgabe innerhalb einer Nutzergeste (Session-Start/Play) vor:
+     * erzeugt/entsperrt den AudioContext (resume() ist asynchron) und spielt einen
+     * unhörbaren Ton, damit die erste echte Note ohne Anlauf-Verzögerung erklingt.
+     */
+    warmUp() {
+      const ctx = this._ensureContext();
+      if (!ctx) return;
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      gain.gain.value = 0.00001; // praktisch stumm, nur zum Aufwecken der Ausgabe
+      osc.connect(gain).connect(ctx.destination);
+      osc.start();
+      osc.stop(ctx.currentTime + 0.02);
     }
 
     /** Notenname (z. B. „D#5") → Frequenz in Hz (gleichstufige Stimmung, A4=440). */
@@ -2651,6 +2667,9 @@
         this.reader.loadBlocks(blocks);
         this.scrollEngine.attach(container);
         this.scrollEngine.watchUserScroll(() => this.reader.pause());
+        // Container-Auswahl ist eine Nutzergeste – hier den AudioContext vorwärmen,
+        // damit der erste Klickton ohne Verzögerung kommt.
+        this.soundEngine.warmUp();
 
         this.toolbar = new Toolbar(this.bus, this.settings);
         this._mountToolbar();
@@ -2856,7 +2875,10 @@
         this.bus.emit('settings:placeholder-pause-changed', { ms });
       });
 
-      this.bus.on('ui:toggle-click-sound', ({ value }) => this.settings.set('clickSoundEnabled', value));
+      this.bus.on('ui:toggle-click-sound', ({ value }) => {
+        this.settings.set('clickSoundEnabled', value);
+        if (value) this.soundEngine.warmUp();
+      });
 
       this.bus.on('ui:focus-mode-set', ({ mode }) => {
         this.settings.set('focusMode', mode);
