@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Universal SpeedReader
 // @namespace    https://github.com/hubmey/tm_speedreader.git
-// @version      1.18.0
+// @version      1.20.0
 // @description  RSVP/ORP Speedreader für nahezu jede textbasierte Webseite, mit synchronem Auto-Scroll des Originalcontainers.
 // @author       Hubertus Meyer
 // @match        *://*/*
@@ -162,6 +162,7 @@
     minimize: '<path d="M9 4v5H4M15 4v5h5M9 20v-5H4M15 20v-5h5" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>',
     updown: '<polyline points="7 9 12 4 17 9" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/><polyline points="7 15 12 20 17 15" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>',
     eye: '<path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/><circle cx="12" cy="12" r="3" fill="none" stroke="currentColor" stroke-width="2"/>',
+    help: '<circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="2"/><path d="M9.2 9.3a2.8 2.8 0 1 1 3.7 2.65c-.7.27-1.15.9-1.15 1.65v.4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="17.2" r="1.1" fill="currentColor"/>',
   };
 
   /** Erzeugt ein kleines Inline-SVG-Icon aus ICONS[name]. */
@@ -1510,6 +1511,14 @@
         border-radius: 8px 0 0 8px; pointer-events: none;
         transition: background-color .12s ease;
       }
+      /* Ebenen-Markierung („-" je Ebene) im linken Farbstreifen, über dem Farbfeld. */
+      .${NS}-zebra-marker {
+        position: absolute; left: 0; top: 0; bottom: 0; width: 10%;
+        display: flex; align-items: center; justify-content: center;
+        color: #fff; text-shadow: 0 1px 2px rgba(0,0,0,.4);
+        font-weight: 700; font-size: 14px; letter-spacing: 0;
+        white-space: nowrap; overflow: hidden; pointer-events: none;
+      }
 
       /* Vollbild: der Reader selbst füllt die komplette Seite statt einer kleinen
          Leiste – große, vertikal zentrierte Wortanzeige, Steuerung unten kompakt. */
@@ -1615,6 +1624,51 @@
       .${NS}-stats-card h2 { margin: 0 0 12px; font-size: 18px; }
       .${NS}-stats-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 16px; margin-bottom: 16px; }
       .${NS}-stats-grid div:nth-child(odd) { opacity: .75; }
+
+      /* Gruppierung der Optionen: vertikaler Trenner + kleine Gruppenlabels. */
+      .${NS}-divider { width: 1px; align-self: stretch; margin: 2px 4px; background: rgba(255,255,255,.14); }
+      .${NS}-toolbar.usr-theme-light .${NS}-divider { background: rgba(0,0,0,.12); }
+      .${NS}-group { display: inline-flex; align-items: center; gap: 6px; }
+      .${NS}-group-label { font-size: 9px; text-transform: uppercase; letter-spacing: .06em; opacity: .5; margin-right: 2px; }
+      .${NS}-statsrow { font-variant-numeric: tabular-nums; }
+      /* Notausstiegs-Zeile nur im Superfokus (sonst liegen die Aktionen in Zeile 3). */
+      .${NS}-exit-row { display: none; }
+      .${NS}-toolbar.usr-superfocus .${NS}-exit-row { display: flex; }
+
+      /* Verzögerte Hover-Hinweise. */
+      .${NS}-tooltip {
+        position: absolute; z-index: 2147483002; transform: translateX(-50%);
+        max-width: 260px; padding: 6px 10px; border-radius: 8px;
+        background: #0b1220; color: #f3f4f6; font: 12px/1.4 system-ui, sans-serif;
+        box-shadow: 0 6px 20px rgba(0,0,0,.4); pointer-events: none;
+        opacity: 0; transition: opacity .12s ease; white-space: normal; text-align: center;
+      }
+      .${NS}-tooltip.usr-tip-below { transform: translate(-50%, 0); }
+      .${NS}-tooltip:not(.usr-tip-below) { transform: translate(-50%, -100%); }
+      .${NS}-tooltip.usr-show { opacity: 1; }
+
+      /* Hilfe-Overlay. */
+      .${NS}-help-modal {
+        position: fixed; inset: 0; z-index: 2147483002;
+        display: flex; align-items: center; justify-content: center;
+        background: rgba(0,0,0,.55);
+      }
+      .${NS}-help-card {
+        background: var(--usr-bg, #1f2937); color: var(--usr-fg, #f3f4f6);
+        border-radius: 12px; padding: 22px 26px; width: min(560px, 92vw);
+        max-height: 82vh; overflow: auto;
+        font: 13px/1.5 system-ui, sans-serif; box-shadow: 0 12px 40px rgba(0,0,0,.45);
+      }
+      .${NS}-help-card h2 { margin: 0 0 10px; font-size: 18px; }
+      .${NS}-help-card h3 { margin: 16px 0 8px; font-size: 13px; text-transform: uppercase; letter-spacing: .05em; opacity: .7; }
+      .${NS}-help-grid { display: grid; grid-template-columns: auto 1fr; gap: 6px 14px; align-items: start; }
+      .${NS}-help-key, .${NS}-help-feat { font-weight: 700; white-space: nowrap; }
+      .${NS}-help-key {
+        font-family: ui-monospace, monospace; background: rgba(255,255,255,.1);
+        padding: 1px 7px; border-radius: 5px; justify-self: start;
+      }
+      .${NS}-toolbar.usr-theme-light .${NS}-help-key, .${NS}-help-card.usr-theme-light .${NS}-help-key { background: rgba(0,0,0,.08); }
+      .${NS}-help-close { width: auto; padding: 8px 16px; margin-top: 18px; }
     `);
   }
 
@@ -1741,6 +1795,41 @@
       this.settings = settings;
       this.element = this._build();
       this._bindBusEvents();
+      this._setupTooltips();
+    }
+
+    /**
+     * Einheitliche, verzögerte Hover-Hinweise: verschiebt vorhandene title-Texte
+     * in data-hint (verhindert doppelte native Tooltips) und zeigt nach ~550 ms
+     * einen gestylten Tooltip beim überfahrenen Bedienelement.
+     */
+    _setupTooltips() {
+      this.element.querySelectorAll('[title]').forEach((el) => {
+        if (!el.getAttribute('data-hint')) el.setAttribute('data-hint', el.getAttribute('title'));
+        el.removeAttribute('title');
+      });
+      this._tip = Utils.el('div', { class: `${NS}-tooltip` });
+      this.element.appendChild(this._tip);
+      let timer = null;
+      const hide = () => { clearTimeout(timer); this._tip.classList.remove('usr-show'); };
+      this.element.addEventListener('mouseover', (e) => {
+        const target = e.target.closest('[data-hint]');
+        if (!target || !this.element.contains(target)) return;
+        clearTimeout(timer);
+        timer = setTimeout(() => {
+          this._tip.textContent = target.getAttribute('data-hint');
+          const tb = this.element.getBoundingClientRect();
+          const rb = target.getBoundingClientRect();
+          this._tip.style.left = `${Utils.clamp(rb.left - tb.left + rb.width / 2, 60, tb.width - 60)}px`;
+          // Standardmäßig über dem Element; bei oberer Toolbar-Position darunter.
+          const below = this.settings.get('toolbarPosition') === 'top';
+          this._tip.style.top = below ? `${rb.bottom - tb.top + 8}px` : `${rb.top - tb.top - 8}px`;
+          this._tip.classList.toggle('usr-tip-below', below);
+          this._tip.classList.add('usr-show');
+        }, 550);
+      });
+      this.element.addEventListener('mouseout', hide);
+      this.element.addEventListener('click', hide, true);
     }
 
     _build() {
@@ -1752,12 +1841,14 @@
       this.wordFocus = Utils.el('span', { class: `${NS}-orp-focus` });
       this.wordAfter = Utils.el('span', { class: `${NS}-word-after` });
       this.refLine = Utils.el('div', { class: `${NS}-refline` });
+      // Textmarkierung im linken Farbstreifen (ein „-" je Listenebene).
+      this.zebraMarker = Utils.el('div', { class: `${NS}-zebra-marker` });
 
       this.display = Utils.el('div', {
         class: `${NS}-display${s.get('orpFixedPoint') ? ' usr-orp-fixed' : ''}`,
         style: `font-size: ${s.get('displayFontSize')}px;`,
       }, [
-        this.refLine, this.wordBefore, this.wordFocus, this.wordAfter,
+        this.refLine, this.zebraMarker, this.wordBefore, this.wordFocus, this.wordAfter,
       ]);
 
       this.progressFill = Utils.el('div', { class: `${NS}-progress-fill` });
@@ -1786,12 +1877,9 @@
       }, [makeIcon('chevronLeft')]);
       this.btnStart = Utils.el('button', {
         class: `${NS}-btn`, title: `Start/Pause (${hotkeyLabel(hotkeys.togglePause)})`,
+        'data-hint': `Startet bzw. pausiert das Lesen. Kürzel: ${hotkeyLabel(hotkeys.togglePause)}`,
         onclick: () => this.bus.emit('ui:toggle'),
       }, [makeIcon('play')]);
-      this.btnStop = Utils.el('button', {
-        class: `${NS}-btn`, title: 'Stopp',
-        onclick: () => this.bus.emit('ui:stop'),
-      }, [makeIcon('stop')]);
       this.btnNext = Utils.el('button', {
         class: `${NS}-btn`, title: `Wort vor (${hotkeyLabel(hotkeys.next)})`,
         onclick: () => this.bus.emit('ui:next'),
@@ -1863,12 +1951,14 @@
       this.clickSoundVariantSelect.value = s.get('clickSoundVariant');
 
       this.togglePosition = Utils.el('button', {
-        class: `${NS}-btn`, title: 'Toolbar-Position wechseln (oben/unten)',
+        class: `${NS}-btn`, title: 'Toolbar-Position oben/unten',
+        'data-hint': 'Verschiebt die Leiste zwischen oberem und unterem Bildschirmrand.',
         onclick: () => this.bus.emit('ui:toggle-position'),
       }, [makeIcon('updown')]);
 
       this.btnFullscreen = Utils.el('button', {
         class: `${NS}-btn`, title: `Vollbild (${hotkeyLabel(hotkeys.fullscreen)})`,
+        'data-hint': `Reader füllt die ganze Seite. Kürzel: ${hotkeyLabel(hotkeys.fullscreen)}`,
         onclick: () => this.bus.emit('ui:toggle-fullscreen'),
       }, [makeIcon('maximize')]);
 
@@ -1878,35 +1968,64 @@
       }, [makeIcon('eye')]);
       this.btnSuperFocus.classList.toggle('usr-active', s.get('superFocusMode'));
 
+      this.btnHelp = Utils.el('button', {
+        class: `${NS}-btn`, title: 'Hilfe – Funktionen & Tastenkürzel',
+        onclick: () => this.bus.emit('ui:toggle-help'),
+      }, [makeIcon('help')]);
+
+      // Kleiner vertikaler Trenner zum optischen Gruppieren.
+      const divider = () => Utils.el('div', { class: `${NS}-divider` });
+      const group = (label, ...children) => Utils.el('div', { class: `${NS}-group` }, [
+        Utils.el('span', { class: `${NS}-group-label`, text: label }), ...children,
+      ]);
+
+      // Zeile 1: Wiedergabe-Steuerung + Regler links, Aktions-Buttons rechts gruppiert.
       const controlsRow = Utils.el('div', { class: `${NS}-row ${NS}-superfocus-hide` }, [
-        this.btnPrevChapter, this.btnPrev, this.btnStart, this.btnStop, this.btnNext, this.btnNextChapter,
-        Utils.el('span', { class: `${NS}-stat`, text: 'WPM' }), this.wpmSlider, this.statWpm,
-        Utils.el('span', { class: `${NS}-stat`, text: 'Schrift' }), this.fontSizeSlider, this.statFontSize,
-        Utils.el('span', { class: `${NS}-stat`, text: 'Platzh.-Pause' }), this.placeholderPauseSlider, this.statPlaceholderPause,
+        this.btnPrevChapter, this.btnPrev, this.btnStart, this.btnNext, this.btnNextChapter,
+        divider(),
+        Utils.el('span', { class: `${NS}-stat`, text: 'WPM' }), this.wpmSlider,
+        Utils.el('span', { class: `${NS}-stat`, text: 'Schrift' }), this.fontSizeSlider,
+        Utils.el('span', { class: `${NS}-stat`, text: 'Pause' }), this.placeholderPauseSlider,
         Utils.el('div', { class: `${NS}-spacer` }),
-        this.btnFullscreen, this.togglePosition,
       ]);
 
+      // Zeile 2: Optionen thematisch gruppiert (Anzeige · Tempo · Überspringen · Ton).
       const toggleRow = Utils.el('div', { class: `${NS}-row ${NS}-superfocus-hide` }, [
-        this.toggleOrp, this.toggleOrpFixed, this.toggleScroll, this.toggleAdaptive, this.togglePunct,
-        this.toggleCaptions, this.toggleCitations, this.toggleTables, this.toggleSourceHighlight,
-        this.toggleListZebra, this.toggleClickSound, this.clickSoundVariantSelect,
-        this.focusModeSelect,
+        group('Anzeige', this.toggleOrp, this.toggleOrpFixed, this.toggleSourceHighlight, this.toggleListZebra),
+        divider(),
+        group('Tempo', this.toggleAdaptive, this.togglePunct, this.toggleScroll),
+        divider(),
+        group('Überspringen', this.toggleCaptions, this.toggleCitations, this.toggleTables),
+        divider(),
+        group('Ton', this.toggleClickSound, this.clickSoundVariantSelect),
+        divider(),
+        group('Fokus', this.focusModeSelect),
+        divider(),
+        group('Ende', this.toggleShowStats, this.toggleAutoClose),
       ]);
 
-      const statsRow = Utils.el('div', { class: `${NS}-row ${NS}-superfocus-hide` }, [
-        this.statChapter, this.statWords, this.statPercent, this.statRemaining, this.statListLevel,
-        this.toggleShowStats, this.toggleAutoClose,
+      // Zeile 3 (letzte): alle Laufzeit-Infos inkl. Restzeit/Timer + Aktions-Buttons rechts.
+      const statsRow = Utils.el('div', { class: `${NS}-row ${NS}-statsrow ${NS}-superfocus-hide` }, [
+        this.statChapter, this.statWords, this.statPercent, this.statRemaining, this.statWpm, this.statListLevel,
+        Utils.el('div', { class: `${NS}-spacer` }),
+        this.btnHelp, this.btnSuperFocus, this.btnFullscreen, this.togglePosition, this.btnClose,
       ]);
 
       this.progressTrack.classList.add(`${NS}-superfocus-hide`);
 
-      // Superfokus-Toggle und Schließen-Button bleiben IMMER sichtbar (eigene Zeile,
-      // nicht Teil von usr-superfocus-hide) – sonst gäbe es im Superfokus-Modus keinen
-      // Ausweg mehr, falls auch das Tastaturkürzel aus irgendeinem Grund nicht greift.
+      // Im Superfokus ist Zeile 3 ausgeblendet – deshalb eine schlanke, immer sichtbare
+      // Aktionszeile, damit man den Modus/Reader jederzeit verlassen kann.
+      this.btnSuperFocusExit = Utils.el('button', {
+        class: `${NS}-btn`, title: `Superfokus beenden (${hotkeyLabel(hotkeys.superFocus)})`,
+        onclick: () => this.bus.emit('ui:toggle-super-focus'),
+      }, [makeIcon('eye')]);
+      this.btnCloseExit = Utils.el('button', {
+        class: `${NS}-btn`, title: `Schließen (${hotkeyLabel(hotkeys.close)})`,
+        onclick: () => this.bus.emit('ui:close'),
+      }, [makeIcon('close')]);
       const exitRow = Utils.el('div', { class: `${NS}-row ${NS}-exit-row` }, [
         Utils.el('div', { class: `${NS}-spacer` }),
-        this.btnSuperFocus, this.btnClose,
+        this.btnSuperFocusExit, this.btnCloseExit,
       ]);
 
       return Utils.el('div', { class: `${NS}-toolbar ${NS}-ui ${posClass} ${themeClass}${s.get('superFocusMode') ? ' usr-superfocus' : ''}` }, [
@@ -1973,6 +2092,7 @@
       this.bus.on('settings:super-focus-changed', ({ value }) => {
         this.element.classList.toggle('usr-superfocus', value);
         this.btnSuperFocus.classList.toggle('usr-active', value);
+        this.btnSuperFocusExit.classList.toggle('usr-active', value);
       });
       this.bus.on('settings:click-sound-variant-changed', ({ variant }) => {
         this.clickSoundVariantSelect.value = variant;
@@ -2024,6 +2144,7 @@
         `${NS}-zebra-lvl-1`, `${NS}-zebra-lvl-2`, `${NS}-zebra-lvl-3`
       );
       if (this.statListLevel) this.statListLevel.textContent = '';
+      if (this.zebraMarker) this.zebraMarker.textContent = '';
       if (!this.settings.get('listZebraStripes') || block?.type !== BlockType.LIST || localIndex == null) return;
       const range = block.getWordRanges()[localIndex];
       const li = range?.startNode?.parentElement?.closest('li');
@@ -2043,6 +2164,8 @@
 
       this.display.classList.add(`${NS}-zebra-lvl-${level}`, liIndex % 2 === 0 ? `${NS}-zebra-a` : `${NS}-zebra-b`);
       if (this.statListLevel) this.statListLevel.textContent = '●'.repeat(depth) + ` Ebene ${depth}`;
+      // Ein „-" je Ebene, mit Leerzeichen davor und danach, innerhalb des Farbfelds.
+      if (this.zebraMarker) this.zebraMarker.textContent = ' - '.repeat(depth);
     }
 
     _renderToken({ token, block, localIndex, index, total, progress, remainingSeconds, chapter }) {
@@ -2087,6 +2210,63 @@
     dispose() {
       document.removeEventListener('fullscreenchange', this._fullscreenChangeHandler);
       this.element.remove();
+    }
+  }
+
+  /**
+   * Hilfe-Overlay: erklärt kompakt Funktionen und Tastenkürzel. Ein-/ausblendbar
+   * über das ?-Icon in der Toolbar. Singleton – erneuter Aufruf schließt es wieder.
+   */
+  class HelpPanel {
+    static toggle(settings, theme) {
+      const existing = document.querySelector(`.${NS}-help-modal`);
+      if (existing) { existing.remove(); return; }
+      const hk = settings.get('hotkeys');
+      const themeClass = theme === 'light' ? 'usr-theme-light' : '';
+
+      const shortcuts = [
+        [hotkeyLabel(hk.togglePause), 'Start / Pause'],
+        [`${hotkeyLabel(hk.prev)} / ${hotkeyLabel(hk.next)}`, 'Ein Wort zurück / vor'],
+        [`${hotkeyLabel(hk.prevChapter)} / ${hotkeyLabel(hk.nextChapter)}`, 'Vorherige / nächste Überschrift'],
+        [`${hotkeyLabel(hk.faster)} / ${hotkeyLabel(hk.slower)}`, 'Schneller / langsamer (WPM)'],
+        [hotkeyLabel(hk.fullscreen), 'Vollbild an/aus'],
+        [hotkeyLabel(hk.superFocus), 'Superfokus (nur das Wort)'],
+        [hotkeyLabel(hk.close), 'Reader schließen'],
+      ];
+      const features = [
+        ['ORP', 'Optimaler Fixationspunkt – hebt den idealen Buchstaben hervor.'],
+        ['Fixpunkt', 'Hält den Fokusbuchstaben an fester Position statt mitzuwandern.'],
+        ['AutoScroll', 'Scrollt den Originaltext synchron mit; manuelles Scrollen pausiert.'],
+        ['Adaptiv', 'Passt das Tempo je Inhalt an (Überschrift, Zahl, langes Wort …).'],
+        ['Satzz.-Pausen', 'Kurze Extrapause nach Satzzeichen.'],
+        ['Überspringen', 'Bildunterschriften, Quellen oder Tabellen beim Lesen auslassen.'],
+        ['Quelltext markieren', 'Hebt das aktuelle Wort im Originaltext hervor.'],
+        ['Listen-Streifen', 'Farbstreifen + „-" je Listenebene links im Textfeld.'],
+        ['Klickton', 'Kurzer Ton je Wort, mit wählbarer Klangfarbe.'],
+        ['Fokus', 'Rest der Seite abdunkeln / verwischen / ausblenden.'],
+        ['Superfokus', 'Blendet die ganze Bedienleiste aus – nur das Wort bleibt.'],
+        ['Pause-Regler', 'Mindest-Anzeigedauer für übersprungene Tabellen/Bilder.'],
+      ];
+
+      const mkList = (rows, keyClass) => Utils.el('div', { class: `${NS}-help-grid` },
+        rows.flatMap(([k, v]) => [
+          Utils.el('div', { class: keyClass, text: k }),
+          Utils.el('div', { text: v }),
+        ]));
+
+      const card = Utils.el('div', { class: `${NS}-help-card ${themeClass}` }, [
+        Utils.el('h2', { text: 'Universal SpeedReader – Hilfe' }),
+        Utils.el('h3', { text: 'Tastenkürzel' }),
+        mkList(shortcuts, `${NS}-help-key`),
+        Utils.el('h3', { text: 'Funktionen' }),
+        mkList(features, `${NS}-help-feat`),
+        Utils.el('button', { class: `${NS}-btn ${NS}-help-close`, text: 'Schließen', onclick: () => modal.remove() }),
+      ]);
+      const modal = Utils.el('div', {
+        class: `${NS}-help-modal ${NS}-ui ${themeClass}`,
+        onclick: (e) => { if (e.target === modal) modal.remove(); },
+      }, [card]);
+      document.body.appendChild(modal);
     }
   }
 
@@ -2643,6 +2823,8 @@
         this.settings.set('superFocusMode', next);
         this.bus.emit('settings:super-focus-changed', { value: next });
       });
+
+      this.bus.on('ui:toggle-help', () => HelpPanel.toggle(this.settings, this.settings.get('theme')));
 
       this.bus.on('ui:click-sound-variant-set', ({ variant }) => {
         this.settings.set('clickSoundVariant', variant);
