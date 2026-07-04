@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Universal SpeedReader
 // @namespace    https://github.com/hubmey/tm_speedreader.git
-// @version      1.23.0
+// @version      1.24.0
 // @description  RSVP/ORP Speedreader für nahezu jede textbasierte Webseite, mit synchronem Auto-Scroll des Originalcontainers.
 // @author       Hubertus Meyer
 // @match        *://*/*
@@ -970,6 +970,15 @@
       ],
     };
 
+    /** Wikipedia-Artikel (deutsch) zum jeweiligen Werk, verlinkt in der Infoleiste. */
+    static WIKI = {
+      'Für Elise – Beethoven': 'https://de.wikipedia.org/wiki/F%C3%BCr_Elise',
+      'Ode an die Freude – Beethoven': 'https://de.wikipedia.org/wiki/Ode_an_die_Freude',
+      'Symphonie Nr. 5 – Beethoven': 'https://de.wikipedia.org/wiki/5._Sinfonie_(Beethoven)',
+      'Eine kleine Nachtmusik – Mozart': 'https://de.wikipedia.org/wiki/Eine_kleine_Nachtmusik',
+      'Menuett in G – Petzold/Bach': 'https://de.wikipedia.org/wiki/Menuett_G-Dur_(BWV_Anh._114_und_115)',
+    };
+
     constructor(settings) {
       this.settings = settings;
       this._ctx = null;
@@ -1686,6 +1695,8 @@
 
       .${NS}-slider { width: 120px; accent-color: #4f46e5; }
       .${NS}-stat { font-size: 11px; opacity: .85; white-space: nowrap; }
+      .${NS}-melody-link { color: inherit; text-decoration: underline; text-underline-offset: 2px; cursor: pointer; }
+      .${NS}-melody-link:hover { color: #a5b4fc; }
       .${NS}-spacer { flex: 1 1 auto; }
       .${NS}-select {
         background: rgba(255,255,255,.08); color: inherit; border: none; border-radius: 6px;
@@ -2214,10 +2225,19 @@
         this.clickSoundVariantSelect.value = variant;
         if (variant !== 'klassik') this.statMelody.textContent = '';
       });
-      // Aktuell gespieltes Klassik-Werk in der Infoleiste anzeigen (nur im Klassik-Modus).
-      this.bus.on('sound:melody', ({ name }) => {
+      // Aktuell gespieltes Klassik-Werk in der Infoleiste anzeigen (nur im Klassik-Modus),
+      // verlinkt auf den zugehörigen Wikipedia-Artikel.
+      this.bus.on('sound:melody', ({ name, url }) => {
         const active = this.settings.get('clickSoundEnabled') && this.settings.get('clickSoundVariant') === 'klassik';
-        this.statMelody.textContent = active ? `🎵 ${name}` : '';
+        if (!active) { this.statMelody.replaceChildren(); return; }
+        if (url) {
+          this.statMelody.replaceChildren(Utils.el('a', {
+            class: `${NS}-melody-link`, href: url, target: '_blank', rel: 'noopener noreferrer',
+            text: `🎵 ${name}`, title: 'Wikipedia-Artikel öffnen',
+          }));
+        } else {
+          this.statMelody.textContent = `🎵 ${name}`;
+        }
       });
       this.bus.on('settings:click-sound-changed', ({ value }) => {
         if (!value) this.statMelody.textContent = '';
@@ -2678,7 +2698,7 @@
       this.focusMode = new FocusModeController();
       this.sourceHighlighter = new SourceHighlighter();
       this.soundEngine = new SoundEngine(this.settings);
-      this.soundEngine.onMelodyChange = (name) => this.bus.emit('sound:melody', { name });
+      this.soundEngine.onMelodyChange = (name) => this.bus.emit('sound:melody', { name, url: SoundEngine.WIKI[name] || '' });
 
       this.container = null;
       this.toolbar = null;
