@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Universal SpeedReader
 // @namespace    https://github.com/hubmey/tm_speedreader.git
-// @version      1.24.1
+// @version      1.25.0
 // @description  RSVP/ORP Speedreader für nahezu jede textbasierte Webseite, mit synchronem Auto-Scroll des Originalcontainers.
 // @author       Hubertus Meyer
 // @match        *://*/*
@@ -932,7 +932,7 @@
 
     /**
      * Easter-Egg „Klassik": jedes Wort spielt die nächste Note einer gemeinfreien
-     * klassischen Melodie. Fünf Werke (alle > 100 Jahre alt, damit gemeinfrei) als
+     * klassischen Melodie. 20 Werke (alle > 100 Jahre alt, damit gemeinfrei) als
      * Notennamen-Sequenz; sie werden in zufälliger Reihenfolge nacheinander
      * vollständig durchgespielt (ganze Hauptthemen, nicht nur Anfangsmotive).
      */
@@ -968,6 +968,67 @@
         'D5','G4','A4','B4','C5','D5','G4','G4','E5','C5','D5','E5','F#5','G5','G4','G4',
         'C5','D5','C5','B4','A4','B4','C5','A4','B4','C5','D5','A4','B4','G4','A4','G4',
       ],
+      'Türkischer Marsch – Mozart': [
+        'B4','A4','G#4','A4','C5','D5','C5','B4','C5','E5','F5','E5','D#5','E5','B5','A5',
+        'G#5','A5','B5','A5','G#5','A5','C6','B5','A5','G5','A5','C6','B5','A5','G5','A5',
+        'B5','A5','G#5','A5','C6','B5','A5','G5','A5','B4','A4','G#4','A4','C5','D5','C5','B4',
+      ],
+      'Ave Maria – Schubert': [
+        'F4','F4','G4','A4','A4','G4','F4','A4','A#4','A4','G4','F4','G4','A4','F4','F4',
+        'C5','A#4','A4','G4','F4','E4','F4','G4','F4','A4','C5','F5','E5','D5','C5','A4',
+      ],
+      'Can-Can – Offenbach': [
+        'D5','D5','C5','A#4','A4','G4','A4','A#4','G4','D5','C5','A#4','A4','G4','A4','A#4',
+        'A4','G4','F4','G4','A4','A#4','A4','G4','F4','E4','F4','G4','A4','D5','C5','A#4','A4','G4',
+      ],
+      'An der schönen blauen Donau – Strauss': [
+        'D4','G4','B4','B4','A4','B4','D5','D5','C5','B4','A4','G4','B4','A4','G4','F#4',
+        'A4','G4','B4','D5','G5','G5','F#5','E5','D5','C5','B4','A4','G4','B4','D5','G5',
+      ],
+      'Walkürenritt – Wagner': [
+        'B3','E4','G4','B3','E4','G4','B4','G4','E4','B3','E4','G4','B4','D5','B4','G4',
+        'E4','G4','B4','E5','D5','B4','G4','B4','E5','B4','G4','E4','B3','E4','G4','B4',
+      ],
+      'Toccata und Fuge d-Moll – Bach': [
+        'A5','G5','A5','G5','F5','E5','D5','C#5','D5','A4','A4','A4','G4','F4','E4','D4',
+        'C#4','D4','E4','F4','G4','A4','A4','G4','F4','E4','D4','C#4','D4','A4','D5','A4',
+      ],
+      'In der Halle des Bergkönigs – Grieg': [
+        'B3','C#4','D4','E4','F#4','D4','F#4','F4','D4','F4','E4','C#4','E4','B3','C#4','D4',
+        'E4','F#4','D4','F#4','A4','G#4','A4','F#4','A4','B4','C#5','D5','E5','F#5','D5','F#5',
+      ],
+      'Morgenstimmung – Grieg': [
+        'G5','E5','D5','C5','D5','E5','G5','E5','D5','C5','D5','E5','G5','A5','E5','A5',
+        'G5','E5','D5','C5','D5','E5','G5','E5','A5','G5','E5','D5','E5','G5','A5','B5',
+      ],
+      'Kanon in D-Dur – Pachelbel': [
+        'F#5','E5','D5','C#5','B4','A4','B4','C#5','D5','C#5','B4','A4','G4','F#4','G4','E4',
+        'D4','F#4','A4','G4','F#4','D4','F#4','E4','D4','B4','D5','A4','B4','C#5','D5','F#4',
+      ],
+      'Ouvertüre Wilhelm Tell – Rossini': [
+        'E4','E4','E4','E4','E4','E4','E4','G4','C5','A4','G4','E4','G4','E4','C4','E4',
+        'E4','E4','E4','E4','E4','E4','E4','G4','C5','A4','G4','E4','G4','C5','C5','G4',
+      ],
+      'Habanera (Carmen) – Bizet': [
+        'D5','C#5','C5','B4','A#4','A4','G#4','G4','F#4','F4','E4','F4','F#4','G4','G#4','A4',
+        'A#4','B4','C5','C#5','D5','A4','A4','D5','C#5','C5','B4','A#4','A4','G#4','G4','F#4',
+      ],
+      'Frühling (Vier Jahreszeiten) – Vivaldi': [
+        'E5','E5','E5','B4','B4','E5','E5','E5','B4','B4','E5','F#5','E5','D#5','E5','B4',
+        'G#5','G#5','A5','F#5','F#5','G#5','E5','E5','E5','B4','B4','E5','F#5','G#5','A5','B5',
+      ],
+      'Greensleeves – traditionell': [
+        'A4','C5','D5','E5','F5','E5','D5','B4','G4','A4','B4','C5','A4','A4','G#4','A4',
+        'B4','G#4','E4','A4','C5','D5','E5','F5','E5','D5','B4','G4','A4','B4','C5','B4','A4','G#4','A4',
+      ],
+      'Wiegenlied – Brahms': [
+        'E5','E5','G5','E5','E5','G5','E5','G5','C6','B5','A5','A5','G5','D5','E5','F5',
+        'D5','D5','E5','F5','D5','F5','B5','A5','G5','B5','C6','C6','G5','E5','G5','C6',
+      ],
+      'Tanz der Zuckerfee – Tschaikowski': [
+        'E5','B4','G#4','B4','E5','B4','G#4','B4','E5','G#5','G5','F#5','E5','B4','G#4','B4',
+        'E5','B4','G#4','B4','A5','G#5','F#5','E5','D#5','E5','F#5','E5','B4','G#4','B4','E5',
+      ],
     };
 
     /** Wikipedia-Artikel (deutsch) zum jeweiligen Werk, verlinkt in der Infoleiste. */
@@ -977,6 +1038,21 @@
       'Symphonie Nr. 5 – Beethoven': 'https://de.wikipedia.org/wiki/5._Sinfonie_(Beethoven)',
       'Eine kleine Nachtmusik – Mozart': 'https://de.wikipedia.org/wiki/Eine_kleine_Nachtmusik',
       'Menuett in G – Petzold/Bach': 'https://de.wikipedia.org/wiki/Menuett_G-Dur_(BWV_Anh._114_und_115)',
+      'Türkischer Marsch – Mozart': 'https://de.wikipedia.org/wiki/Klaviersonate_Nr._11_(Mozart)',
+      'Ave Maria – Schubert': 'https://de.wikipedia.org/wiki/Ave_Maria_(Schubert)',
+      'Can-Can – Offenbach': 'https://de.wikipedia.org/wiki/Orpheus_in_der_Unterwelt',
+      'An der schönen blauen Donau – Strauss': 'https://de.wikipedia.org/wiki/An_der_sch%C3%B6nen_blauen_Donau',
+      'Walkürenritt – Wagner': 'https://de.wikipedia.org/wiki/Walk%C3%BCrenritt',
+      'Toccata und Fuge d-Moll – Bach': 'https://de.wikipedia.org/wiki/Toccata_und_Fuge_d-Moll_BWV_565',
+      'In der Halle des Bergkönigs – Grieg': 'https://de.wikipedia.org/wiki/Peer_Gynt_(Grieg)',
+      'Morgenstimmung – Grieg': 'https://de.wikipedia.org/wiki/Peer_Gynt_(Grieg)',
+      'Kanon in D-Dur – Pachelbel': 'https://de.wikipedia.org/wiki/Kanon_und_Gigue_in_D-Dur',
+      'Ouvertüre Wilhelm Tell – Rossini': 'https://de.wikipedia.org/wiki/Wilhelm_Tell_(Rossini)',
+      'Habanera (Carmen) – Bizet': 'https://de.wikipedia.org/wiki/Carmen',
+      'Frühling (Vier Jahreszeiten) – Vivaldi': 'https://de.wikipedia.org/wiki/Die_vier_Jahreszeiten_(Vivaldi)',
+      'Greensleeves – traditionell': 'https://de.wikipedia.org/wiki/Greensleeves',
+      'Wiegenlied – Brahms': 'https://de.wikipedia.org/wiki/Wiegenlied_(Brahms)',
+      'Tanz der Zuckerfee – Tschaikowski': 'https://de.wikipedia.org/wiki/Der_Nussknacker',
     };
 
     constructor(settings) {
