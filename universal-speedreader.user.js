@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Universal SpeedReader
 // @namespace    https://github.com/hubmey/tm_speedreader.git
-// @version      1.19.0
+// @version      1.19.1
 // @description  RSVP/ORP Speedreader für nahezu jede textbasierte Webseite, mit synchronem Auto-Scroll des Originalcontainers.
 // @author       Hubertus Meyer
 // @match        *://*/*
@@ -1514,7 +1514,8 @@
       .${NS}-zebra-marker {
         position: absolute; left: 0; top: 0; bottom: 0; width: 10%;
         display: flex; align-items: center; justify-content: center;
-        color: rgba(0,0,0,.55); font-weight: 700; font-size: 14px; letter-spacing: 0;
+        color: #fff; text-shadow: 0 1px 2px rgba(0,0,0,.4);
+        font-weight: 700; font-size: 14px; letter-spacing: 0;
         white-space: nowrap; overflow: hidden; pointer-events: none;
       }
 
