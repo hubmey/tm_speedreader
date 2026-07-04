@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Universal SpeedReader
 // @namespace    https://github.com/hubmey/tm_speedreader.git
-// @version      1.14.0
+// @version      1.16.0
 // @description  RSVP/ORP Speedreader für nahezu jede textbasierte Webseite, mit synchronem Auto-Scroll des Originalcontainers.
 // @author       Hubertus Meyer
 // @match        *://*/*
@@ -1079,6 +1079,16 @@
       this._lastSetScrollTop = null;
       this._userScrollHandler = null;
       this._userScrollTarget = null;
+      // Von der fixierten Toolbar verdeckte Randbereiche (px) – das Scroll-Ziel
+      // positioniert das aktuelle Wort in den FREIEN Bereich dazwischen, nie
+      // hinter die Toolbar.
+      this._reservedTop = 0;
+      this._reservedBottom = 0;
+    }
+
+    setReservedInsets(top, bottom) {
+      this._reservedTop = top || 0;
+      this._reservedBottom = bottom || 0;
     }
 
     /** Ermittelt das nächste scrollbare Vorfahrenelement (oder window). */
@@ -1165,7 +1175,11 @@
 
       const currentScrollTop = this._getScrollTop();
       const refTopRelativeToParent = refRect.top - parentRect.top + currentScrollTop;
-      const desiredOffsetInViewport = parentRect.height * ratio;
+      // Wort im freien Bereich (Viewport minus oben/unten von der Toolbar
+      // verdeckte Zonen) an der eingestellten Ratio positionieren – so landet
+      // das aktuelle Wort nie hinter der Toolbar.
+      const freeHeight = Math.max(0, parentRect.height - this._reservedTop - this._reservedBottom);
+      const desiredOffsetInViewport = this._reservedTop + freeHeight * ratio;
 
       this._targetTop = Utils.clamp(
         refTopRelativeToParent - desiredOffsetInViewport,
@@ -1536,23 +1550,23 @@
       .${NS}-toolbar.usr-pos-top { top: 8px; }
       .${NS}-toolbar.usr-pos-bottom { bottom: 8px; }
       .${NS}-toolbar.usr-theme-light { --usr-bg: #f9fafb; --usr-fg: #111827; box-shadow: 0 4px 18px rgba(0,0,0,.12); }
-      /* Listen-Zebrastreifen: färbt den Reader/die Toolbar selbst (NICHT die
-         Wortanzeige-Box). Je Verschachtelungsebene (lvl-1/2/3, zyklisch) eine
-         eigene Farbfamilie, innerhalb einer Ebene hell/dunkel (a/b) abwechselnd
-         je <li>-Position – so bleibt sowohl die Ebene als auch der Wechsel
-         zwischen Geschwister-Listenpunkten sichtbar. */
-      .${NS}-toolbar.${NS}-zebra-lvl-1.${NS}-zebra-a { background: #4338ca; }
-      .${NS}-toolbar.${NS}-zebra-lvl-1.${NS}-zebra-b { background: #6366f1; }
-      .${NS}-toolbar.${NS}-zebra-lvl-2.${NS}-zebra-a { background: #b45309; }
-      .${NS}-toolbar.${NS}-zebra-lvl-2.${NS}-zebra-b { background: #f59e0b; }
-      .${NS}-toolbar.${NS}-zebra-lvl-3.${NS}-zebra-a { background: #0f766e; }
-      .${NS}-toolbar.${NS}-zebra-lvl-3.${NS}-zebra-b { background: #14b8a6; }
-      .${NS}-toolbar.usr-theme-light.${NS}-zebra-lvl-1.${NS}-zebra-a { background: #e0e7ff; }
-      .${NS}-toolbar.usr-theme-light.${NS}-zebra-lvl-1.${NS}-zebra-b { background: #c7d2fe; }
-      .${NS}-toolbar.usr-theme-light.${NS}-zebra-lvl-2.${NS}-zebra-a { background: #fef3c7; }
-      .${NS}-toolbar.usr-theme-light.${NS}-zebra-lvl-2.${NS}-zebra-b { background: #fde68a; }
-      .${NS}-toolbar.usr-theme-light.${NS}-zebra-lvl-3.${NS}-zebra-a { background: #d1fae5; }
-      .${NS}-toolbar.usr-theme-light.${NS}-zebra-lvl-3.${NS}-zebra-b { background: #99f6e4; }
+      /* Listen-Zebra: nur ein schmaler Farbstreifen (10% Breite) links im
+         Textbereich (Wortanzeige), NICHT die ganze Toolbar. Ebene = Farbfamilie
+         (lvl-1/2/3, zyklisch), Parität der <li> = hell/dunkel (a/b). */
+      /* Dezente Helligkeitsabstufung EINER Farbe (Akzent-Indigo, hsl ~244):
+         Ebene = Helligkeitsstufe, <li>-Parität = kleiner Hell/Dunkel-Schritt. */
+      .${NS}-display.${NS}-zebra-lvl-1.${NS}-zebra-a { --usr-zebra: hsl(244 60% 42%); }
+      .${NS}-display.${NS}-zebra-lvl-1.${NS}-zebra-b { --usr-zebra: hsl(244 60% 52%); }
+      .${NS}-display.${NS}-zebra-lvl-2.${NS}-zebra-a { --usr-zebra: hsl(244 58% 60%); }
+      .${NS}-display.${NS}-zebra-lvl-2.${NS}-zebra-b { --usr-zebra: hsl(244 58% 70%); }
+      .${NS}-display.${NS}-zebra-lvl-3.${NS}-zebra-a { --usr-zebra: hsl(244 56% 78%); }
+      .${NS}-display.${NS}-zebra-lvl-3.${NS}-zebra-b { --usr-zebra: hsl(244 56% 86%); }
+      .${NS}-display[class*="${NS}-zebra-lvl"]::before {
+        content: ''; position: absolute; left: 0; top: 0; bottom: 0; width: 10%;
+        background: var(--usr-zebra, transparent);
+        border-radius: 8px 0 0 8px; pointer-events: none;
+        transition: background-color .12s ease;
+      }
 
       /* Vollbild: der Reader selbst füllt die komplette Seite statt einer kleinen
          Leiste – große, vertikal zentrierte Wortanzeige, Steuerung unten kompakt. */
@@ -2098,9 +2112,10 @@
      * nächste beginnt. Außerhalb von Listen wieder normaler Hintergrund.
      */
     _applyListZebra(block, localIndex) {
-      // Färbt den Reader/die Toolbar selbst (this.element), NICHT die Wortanzeige-Box –
-      // die Wortanzeige (.usr-display) bleibt immer neutral/unverändert.
-      this.element.classList.remove(
+      // Dezenter, schmaler Farbstreifen links im Textbereich (Wortanzeige) statt
+      // Einfärbung des gesamten Readers – Ebene über Farbe, Position/Parität über
+      // hell/dunkel, ohne die ganze Toolbar umzufärben (weniger ablenkend).
+      this.display.classList.remove(
         `${NS}-zebra-a`, `${NS}-zebra-b`,
         `${NS}-zebra-lvl-1`, `${NS}-zebra-lvl-2`, `${NS}-zebra-lvl-3`
       );
@@ -2122,7 +2137,7 @@
       }
       const level = ((depth - 1 + 3) % 3) + 1; // 1..3, zyklisch bei tieferer Verschachtelung
 
-      this.element.classList.add(`${NS}-zebra-lvl-${level}`, liIndex % 2 === 0 ? `${NS}-zebra-a` : `${NS}-zebra-b`);
+      this.display.classList.add(`${NS}-zebra-lvl-${level}`, liIndex % 2 === 0 ? `${NS}-zebra-a` : `${NS}-zebra-b`);
       if (this.statListLevel) this.statListLevel.textContent = '●'.repeat(depth) + ` Ebene ${depth}`;
     }
 
@@ -2520,6 +2535,57 @@
       // Fest im Viewport (position: fixed via CSS) statt im Container verankert –
       // die Container-Referenz wird nicht mehr benötigt, top/bottom steuert nur noch die CSS-Klasse.
       if (!this.toolbar.element.isConnected) document.body.appendChild(this.toolbar.element);
+      this._reserveSpaceForToolbar();
+    }
+
+    /**
+     * Reserviert am oberen bzw. unteren Seitenrand Platz in Höhe der Toolbar,
+     * damit der fixierte Reader keinen Seiteninhalt dauerhaft verdeckt. Die
+     * Toolbar-Höhe variiert (Zeilenumbruch bei schmalem Viewport, Superfokus),
+     * daher via ResizeObserver nachgeführt. Im Vollbildmodus keine Reservierung
+     * (der Reader soll dort bewusst die ganze Seite einnehmen).
+     */
+    _reserveSpaceForToolbar() {
+      if (!this.toolbar) return;
+      const el = this.toolbar.element;
+      if (this._originalBodyPadding == null) {
+        this._originalBodyPadding = {
+          top: document.body.style.paddingTop,
+          bottom: document.body.style.paddingBottom,
+        };
+      }
+      const apply = () => {
+        // beide Seiten zunächst auf Ursprung zurücksetzen, dann die aktive setzen.
+        document.body.style.paddingTop = this._originalBodyPadding.top;
+        document.body.style.paddingBottom = this._originalBodyPadding.bottom;
+        if (el.classList.contains('usr-fullscreen-mode')) {
+          this.scrollEngine.setReservedInsets(0, 0);
+          return;
+        }
+        const gap = el.getBoundingClientRect().height + 16;
+        if (this.settings.get('toolbarPosition') === 'bottom') {
+          document.body.style.paddingBottom = `${gap}px`;
+          this.scrollEngine.setReservedInsets(0, gap);
+        } else {
+          document.body.style.paddingTop = `${gap}px`;
+          this.scrollEngine.setReservedInsets(gap, 0);
+        }
+      };
+      apply();
+      this._toolbarResizeObserver?.disconnect();
+      this._toolbarResizeObserver = new ResizeObserver(() => apply());
+      this._toolbarResizeObserver.observe(el);
+    }
+
+    _releaseToolbarSpace() {
+      this._toolbarResizeObserver?.disconnect();
+      this._toolbarResizeObserver = null;
+      this.scrollEngine.setReservedInsets(0, 0);
+      if (this._originalBodyPadding) {
+        document.body.style.paddingTop = this._originalBodyPadding.top;
+        document.body.style.paddingBottom = this._originalBodyPadding.bottom;
+        this._originalBodyPadding = null;
+      }
     }
 
     _observeMutations(container) {
@@ -2578,6 +2644,7 @@
       this.keyboard.disable();
       this._mutationObserver?.disconnect();
       this.domParser.dispose();
+      this._releaseToolbarSpace();
       this.toolbar?.dispose();
       this.toolbar = null;
       this.container = null;
