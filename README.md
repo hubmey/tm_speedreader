@@ -36,7 +36,8 @@ oder unten verschieben.
 | --- | --- |
 | `Leertaste` | Start / Pause |
 | `←` / `→` | Ein Wort zurück / vor |
-| `Bild↑` / `Bild↓` | Vorherige / nächste Überschrift |
+| `⇧←` / `⇧→` | Vorherige / nächste Überschrift |
+| `Bild↑` / `Bild↓` | Überschrift (Alternative) |
 | `↑` / `↓` | Schneller / langsamer (WPM) |
 | `F` | Vollbild an/aus |
 | `Z` | Superfokus (nur das Wort) |

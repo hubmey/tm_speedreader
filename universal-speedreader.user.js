@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Universal SpeedReader
 // @namespace    https://github.com/hubmey/tm_speedreader.git
-// @version      1.21.0
+// @version      1.22.0
 // @description  RSVP/ORP Speedreader für nahezu jede textbasierte Webseite, mit synchronem Auto-Scroll des Originalcontainers.
 // @author       Hubertus Meyer
 // @match        *://*/*
@@ -1923,7 +1923,7 @@
       // Schritt, doppelter Chevron = Kapitel-Sprung – eindeutig unterscheidbar.
       const hotkeys = s.get('hotkeys');
       this.btnPrevChapter = Utils.el('button', {
-        class: `${NS}-btn`, title: `Vorherige Überschrift (${hotkeyLabel(hotkeys.prevChapter)})`,
+        class: `${NS}-btn`, title: `Vorherige Überschrift (⇧${hotkeyLabel(hotkeys.prev)} oder ${hotkeyLabel(hotkeys.prevChapter)})`,
         onclick: () => this.bus.emit('ui:prev-chapter'),
       }, [makeIcon('chevronsLeft')]);
       this.btnPrev = Utils.el('button', {
@@ -1940,7 +1940,7 @@
         onclick: () => this.bus.emit('ui:next'),
       }, [makeIcon('chevronRight')]);
       this.btnNextChapter = Utils.el('button', {
-        class: `${NS}-btn`, title: `Nächste Überschrift (${hotkeyLabel(hotkeys.nextChapter)})`,
+        class: `${NS}-btn`, title: `Nächste Überschrift (⇧${hotkeyLabel(hotkeys.next)} oder ${hotkeyLabel(hotkeys.nextChapter)})`,
         onclick: () => this.bus.emit('ui:next-chapter'),
       }, [makeIcon('chevronsRight')]);
       this.btnClose = Utils.el('button', {
@@ -2283,7 +2283,8 @@
       const shortcuts = [
         [hotkeyLabel(hk.togglePause), 'Start / Pause'],
         [`${hotkeyLabel(hk.prev)} / ${hotkeyLabel(hk.next)}`, 'Ein Wort zurück / vor'],
-        [`${hotkeyLabel(hk.prevChapter)} / ${hotkeyLabel(hk.nextChapter)}`, 'Vorherige / nächste Überschrift'],
+        [`⇧${hotkeyLabel(hk.prev)} / ⇧${hotkeyLabel(hk.next)}`, 'Vorherige / nächste Überschrift'],
+        [`${hotkeyLabel(hk.prevChapter)} / ${hotkeyLabel(hk.nextChapter)}`, 'Überschrift (Alternative)'],
         [`${hotkeyLabel(hk.faster)} / ${hotkeyLabel(hk.slower)}`, 'Schneller / langsamer (WPM)'],
         [hotkeyLabel(hk.fullscreen), 'Vollbild an/aus'],
         [hotkeyLabel(hk.superFocus), 'Superfokus (nur das Wort)'],
@@ -2411,6 +2412,18 @@
       // reagieren und den Lesefluss stören könnten (z. B. Pfeil hoch/runter,
       // die zusätzlich zum Tempo-Wechsel den Container hoch-/runterscrollen).
       const hotkeys = this.settings.get('hotkeys');
+
+      // Umschalt+Pfeil links/rechts = vorherige/nächste Überschrift. Alternative zu
+      // Bild↑/Bild↓, die auf vielen Mac-Tastaturen fehlen. Vor dem normalen Wort-
+      // Schritt (Pfeil ohne Umschalt) abfangen.
+      if (evt.shiftKey && (evt.code === hotkeys.prev || evt.code === hotkeys.next)) {
+        evt.preventDefault();
+        evt.stopPropagation();
+        this.bus.emit(evt.code === hotkeys.prev ? 'ui:prev-chapter' : 'ui:next-chapter');
+        this.bus.emit('ui:hotkey-fired');
+        return;
+      }
+
       switch (evt.code) {
         case hotkeys.togglePause:
           evt.preventDefault();
