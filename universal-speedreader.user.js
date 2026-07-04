@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Universal SpeedReader
 // @namespace    https://github.com/hubmey/tm_speedreader.git
-// @version      1.16.0
+// @version      1.18.0
 // @description  RSVP/ORP Speedreader für nahezu jede textbasierte Webseite, mit synchronem Auto-Scroll des Originalcontainers.
 // @author       Hubertus Meyer
 // @match        *://*/*
@@ -84,12 +84,6 @@
     maxPlaceholderPauseMs: 3000,
     clickSoundEnabled: false, // kurzer Klickton bei jedem neuen Wort
     clickSoundVariant: 'click', // 'click' | 'soft' | 'blip' | 'wood' | 'bell'
-    ttsEnabled: false,   // jedes Wort zusätzlich per Sprachausgabe (Web Speech API) vorlesen
-    ttsRate: 1,          // Sprechgeschwindigkeit (0.5–2), unabhängig von WPM
-    minTtsRate: 0.5,
-    maxTtsRate: 2,
-    ttsVolume: 1,
-    ttsVoiceURI: '',     // '' = Browser-/System-Standardstimme
     displayFontSize: 30,      // Schriftgröße (px) der Wortanzeige
     minFontSize: 14,
     maxFontSize: 72,
@@ -969,57 +963,6 @@
     dispose() {
       this._ctx?.close();
       this._ctx = null;
-    }
-  }
-
-  /**
-   * Optionale Sprachausgabe (Web Speech API) – liest jedes angezeigte Wort per
-   * SpeechSynthesis vor, parallel zur visuellen RSVP-Anzeige. Eine neue
-   * Utterance pro Wort ersetzt (cancel()) sofort die vorherige, damit sich bei
-   * höherem WPM keine Sprechwarteschlange aufstaut und die Ausgabe nicht immer
-   * weiter hinter der Anzeige zurückfällt. Bei sehr hohem WPM kann die Sprache
-   * dennoch nicht mit jedem Wort exakt Schritt halten – technische Grenze der
-   * Speech-Synthesis-API, kein Bug.
-   */
-  class TTSEngine {
-    constructor(settings) {
-      this.settings = settings;
-      this._supported = 'speechSynthesis' in window;
-      this._voices = [];
-      if (this._supported) {
-        this._loadVoices();
-        window.speechSynthesis.addEventListener?.('voiceschanged', () => this._loadVoices());
-      }
-    }
-
-    _loadVoices() {
-      this._voices = window.speechSynthesis.getVoices();
-    }
-
-    isSupported() {
-      return this._supported;
-    }
-
-    getVoices() {
-      return this._voices;
-    }
-
-    speak(text) {
-      if (!this._supported || !this.settings.get('ttsEnabled') || !text) return;
-      window.speechSynthesis.cancel();
-      const utterance = new SpeechSynthesisUtterance(text);
-      utterance.rate = this.settings.get('ttsRate');
-      utterance.volume = this.settings.get('ttsVolume');
-      const voiceURI = this.settings.get('ttsVoiceURI');
-      if (voiceURI) {
-        const voice = this._voices.find((v) => v.voiceURI === voiceURI);
-        if (voice) utterance.voice = voice;
-      }
-      window.speechSynthesis.speak(utterance);
-    }
-
-    stop() {
-      if (this._supported) window.speechSynthesis.cancel();
     }
   }
 
@@ -1906,24 +1849,6 @@
       this.toggleClickSound = this._makeToggle('Klickton', 'clickSoundEnabled', 'ui:toggle-click-sound');
       this.toggleShowStats = this._makeToggle('Zusammenfassung', 'showStatsOnFinish', 'ui:toggle-show-stats');
       this.toggleAutoClose = this._makeToggle('Autom. schließen', 'autoCloseAfterFinish', 'ui:toggle-auto-close');
-      this.toggleTts = this._makeToggle('Vorlesen (TTS)', 'ttsEnabled', 'ui:toggle-tts');
-
-      this.statTtsRate = Utils.el('span', { class: `${NS}-stat`, text: `${s.get('ttsRate').toFixed(1)}x` });
-      this.ttsRateSlider = Utils.el('input', {
-        class: `${NS}-slider`, type: 'range',
-        min: s.get('minTtsRate'), max: s.get('maxTtsRate'), step: 0.1, value: s.get('ttsRate'),
-        title: 'Sprechgeschwindigkeit der Sprachausgabe',
-        oninput: (e) => this.bus.emit('ui:tts-rate-set', { rate: Number(e.target.value) }),
-      });
-
-      this.ttsVoiceSelect = Utils.el('select', {
-        class: `${NS}-select`, title: 'Stimme der Sprachausgabe',
-        onchange: (e) => this.bus.emit('ui:tts-voice-set', { voiceURI: e.target.value }),
-      });
-      this._populateTtsVoices();
-      if ('speechSynthesis' in window) {
-        window.speechSynthesis.addEventListener?.('voiceschanged', () => this._populateTtsVoices());
-      }
 
       this.clickSoundVariantSelect = Utils.el('select', {
         class: `${NS}-select`, title: 'Klangfarbe des Klicktons',
@@ -1958,7 +1883,6 @@
         Utils.el('span', { class: `${NS}-stat`, text: 'WPM' }), this.wpmSlider, this.statWpm,
         Utils.el('span', { class: `${NS}-stat`, text: 'Schrift' }), this.fontSizeSlider, this.statFontSize,
         Utils.el('span', { class: `${NS}-stat`, text: 'Platzh.-Pause' }), this.placeholderPauseSlider, this.statPlaceholderPause,
-        Utils.el('span', { class: `${NS}-stat`, text: 'TTS-Tempo' }), this.ttsRateSlider, this.statTtsRate,
         Utils.el('div', { class: `${NS}-spacer` }),
         this.btnFullscreen, this.togglePosition,
       ]);
@@ -1967,7 +1891,7 @@
         this.toggleOrp, this.toggleOrpFixed, this.toggleScroll, this.toggleAdaptive, this.togglePunct,
         this.toggleCaptions, this.toggleCitations, this.toggleTables, this.toggleSourceHighlight,
         this.toggleListZebra, this.toggleClickSound, this.clickSoundVariantSelect,
-        this.toggleTts, this.ttsVoiceSelect, this.focusModeSelect,
+        this.focusModeSelect,
       ]);
 
       const statsRow = Utils.el('div', { class: `${NS}-row ${NS}-superfocus-hide` }, [
@@ -2005,22 +1929,6 @@
       return wrapper;
     }
 
-    /** Füllt/aktualisiert die Stimmenauswahl (Web Speech API liefert Stimmen oft erst asynchron). */
-    _populateTtsVoices() {
-      if (!('speechSynthesis' in window)) {
-        this.ttsVoiceSelect.disabled = true;
-        this.ttsVoiceSelect.replaceChildren(Utils.el('option', { value: '', text: 'TTS nicht unterstützt' }));
-        return;
-      }
-      const voices = window.speechSynthesis.getVoices();
-      const current = this.settings.get('ttsVoiceURI');
-      this.ttsVoiceSelect.replaceChildren(
-        Utils.el('option', { value: '', text: 'Standardstimme' }),
-        ...voices.map((v) => Utils.el('option', { value: v.voiceURI, text: `${v.name} (${v.lang})` }))
-      );
-      this.ttsVoiceSelect.value = current || '';
-    }
-
     _handleSeekClick(evt) {
       const rect = this.progressTrack.getBoundingClientRect();
       const ratio = Utils.clamp((evt.clientX - rect.left) / rect.width, 0, 1);
@@ -2047,10 +1955,6 @@
       this.bus.on('settings:placeholder-pause-changed', ({ ms }) => {
         this.placeholderPauseSlider.value = ms;
         this.statPlaceholderPause.textContent = `${(ms / 1000).toFixed(1)}s`;
-      });
-      this.bus.on('settings:tts-rate-changed', ({ rate }) => {
-        this.ttsRateSlider.value = rate;
-        this.statTtsRate.textContent = `${rate.toFixed(1)}x`;
       });
 
       // Icon/Zustand nachführen, auch wenn Vollbild anders verlassen wird (z. B. ESC).
@@ -2455,7 +2359,6 @@
       this.focusMode = new FocusModeController();
       this.sourceHighlighter = new SourceHighlighter();
       this.soundEngine = new SoundEngine(this.settings);
-      this.ttsEngine = new TTSEngine(this.settings);
 
       this.container = null;
       this.toolbar = null;
@@ -2663,12 +2566,6 @@
         if (this.reader.state === ReaderState.PLAYING) this._resyncScroll();
       });
       this.bus.on('ui:stop', () => { this.reader.stop(); this._persistPosition(); });
-
-      // TTS nicht weiterreden lassen, sobald der Reader nicht mehr aktiv spielt
-      // (Pause/Stopp/Ende) – sonst spricht die letzte Utterance ungestört zu Ende.
-      this.bus.on('reader:state', ({ state }) => {
-        if (state !== ReaderState.PLAYING) this.ttsEngine.stop();
-      });
       this.bus.on('ui:next', () => { this.reader.pause(); this.reader.next(); });
       this.bus.on('ui:prev', () => { this.reader.pause(); this.reader.prev(); });
       this.bus.on('ui:next-chapter', () => { this.reader.pause(); this.reader.nextChapter(); });
@@ -2697,16 +2594,6 @@
       });
 
       this.bus.on('ui:toggle-list-zebra', ({ value }) => this.settings.set('listZebraStripes', value));
-
-      this.bus.on('ui:toggle-tts', ({ value }) => {
-        this.settings.set('ttsEnabled', value);
-        if (!value) this.ttsEngine.stop();
-      });
-      this.bus.on('ui:tts-rate-set', ({ rate }) => {
-        this.settings.set('ttsRate', rate);
-        this.bus.emit('settings:tts-rate-changed', { rate });
-      });
-      this.bus.on('ui:tts-voice-set', ({ voiceURI }) => this.settings.set('ttsVoiceURI', voiceURI));
 
       this.bus.on('ui:hotkey-fired', () => this.scrollEngine.suppressUserScrollDetection());
 
@@ -2782,7 +2669,6 @@
           this.sourceHighlighter.clear();
         }
         this.soundEngine.playTick();
-        this.ttsEngine.speak(data.token?.text);
       });
 
       this.bus.on('reader:finished', (stats) => {
