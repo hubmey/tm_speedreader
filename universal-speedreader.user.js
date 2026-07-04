@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Universal SpeedReader
 // @namespace    https://github.com/hubmey/tm_speedreader.git
-// @version      1.24.0
+// @version      1.24.1
 // @description  RSVP/ORP Speedreader für nahezu jede textbasierte Webseite, mit synchronem Auto-Scroll des Originalcontainers.
 // @author       Hubertus Meyer
 // @match        *://*/*
@@ -1751,7 +1751,14 @@
       .${NS}-toolbar.usr-theme-light .${NS}-divider { background: rgba(0,0,0,.12); }
       .${NS}-group { display: inline-flex; align-items: center; gap: 6px; }
       .${NS}-group-label { font-size: 9px; text-transform: uppercase; letter-spacing: .06em; opacity: .5; margin-right: 2px; }
-      .${NS}-statsrow { font-variant-numeric: tabular-nums; }
+      /* Infoleiste nie umbrechen; der (potenziell lange) Melodietitel wird bei
+         Platzmangel gekürzt (…), statt die Leiste auf zwei Zeilen zu drücken. */
+      .${NS}-statsrow { font-variant-numeric: tabular-nums; flex-wrap: nowrap; }
+      .${NS}-stat-melody { min-width: 0; flex: 0 1 auto; overflow: hidden; }
+      .${NS}-melody-link {
+        display: inline-block; max-width: 100%; overflow: hidden;
+        text-overflow: ellipsis; white-space: nowrap; vertical-align: bottom;
+      }
       /* Notausstiegs-Zeile nur im Superfokus (sonst liegen die Aktionen in Zeile 3). */
       .${NS}-exit-row { display: none; }
       .${NS}-toolbar.usr-view-focus .${NS}-exit-row { display: flex; }
