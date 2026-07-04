@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Universal SpeedReader
 // @namespace    https://github.com/hubmey/tm_speedreader.git
-// @version      1.20.0
+// @version      1.24.0
 // @description  RSVP/ORP Speedreader für nahezu jede textbasierte Webseite, mit synchronem Auto-Scroll des Originalcontainers.
 // @author       Hubertus Meyer
 // @match        *://*/*
@@ -83,14 +83,14 @@
     minPlaceholderPauseMs: 300,
     maxPlaceholderPauseMs: 3000,
     clickSoundEnabled: false, // kurzer Klickton bei jedem neuen Wort
-    clickSoundVariant: 'click', // 'click' | 'soft' | 'blip' | 'wood' | 'bell'
+    clickSoundVariant: 'click', // 'click' | 'soft' | 'blip' | 'wood' | 'bell' | 'klassik'
     displayFontSize: 30,      // Schriftgröße (px) der Wortanzeige
     minFontSize: 14,
     maxFontSize: 72,
     focusMode: 'off',         // 'off' | 'dim' | 'blur' | 'hide' – Behandlung von Elementen außerhalb des Containers
     highlightSourceWord: true, // aktuelles Wort dezent im Original-Quelltext hervorheben
     listZebraStripes: false,  // Wortanzeige-Hintergrund je nach <li>-Position abwechselnd einfärben
-    superFocusMode: false,    // nur das aktuelle Wort anzeigen, komplette Toolbar-Chrome ausblenden
+    viewMode: 'full',         // 'full' = alles | 'compact' = nur Wort+Fortschritt+Infoleiste | 'focus' = nur das Wort
     showStatsOnFinish: true,  // Zusammenfassung nach Sitzungsende anzeigen
     autoCloseAfterFinish: false, // Reader nach Sitzungsende automatisch schließen
     autoCloseDelayMs: 4000,   // Verzögerung bis Auto-Schließen, falls Statistik noch angezeigt wird
@@ -930,9 +930,68 @@
       bell: { type: 'sine', freq: 1400, duration: 0.12, gain: 0.04 },
     };
 
+    /**
+     * Easter-Egg „Klassik": jedes Wort spielt die nächste Note einer gemeinfreien
+     * klassischen Melodie. Fünf Werke (alle > 100 Jahre alt, damit gemeinfrei) als
+     * Notennamen-Sequenz; sie werden in zufälliger Reihenfolge nacheinander
+     * vollständig durchgespielt (ganze Hauptthemen, nicht nur Anfangsmotive).
+     */
+    static MELODIES = {
+      'Für Elise – Beethoven': [
+        'E5','D#5','E5','D#5','E5','B4','D5','C5','A4','C4','E4','A4','B4','E4','G#4','B4','C5',
+        'E5','D#5','E5','D#5','E5','B4','D5','C5','A4','C4','E4','A4','B4','E4','C5','B4','A4',
+        'B4','C5','D5','E5','G4','F5','E5','D5','F4','E5','D5','C5','E4','D5','C5','B4',
+        'E4','E5','D#5','E5','D#5','E5','B4','D5','C5','A4','C4','E4','A4','B4','E4','G#4','B4','C5',
+        'E5','D#5','E5','D#5','E5','B4','D5','C5','A4','C4','E4','A4','B4','E4','C5','B4','A4',
+      ],
+      'Ode an die Freude – Beethoven': [
+        'E4','E4','F4','G4','G4','F4','E4','D4','C4','C4','D4','E4','E4','D4','D4',
+        'E4','E4','F4','G4','G4','F4','E4','D4','C4','C4','D4','E4','D4','C4','C4',
+        'D4','D4','E4','C4','D4','E4','F4','E4','C4','D4','E4','F4','E4','D4','C4','D4','G3',
+        'E4','E4','F4','G4','G4','F4','E4','D4','C4','C4','D4','E4','D4','C4','C4',
+      ],
+      'Symphonie Nr. 5 – Beethoven': [
+        'G4','G4','G4','D#4','F4','F4','F4','D4',
+        'G4','G4','G4','D#4','F4','F4','F4','D4',
+        'G4','G4','G4','C5','A#4','A#4','A#4','G4','A#4','A#4','A#4','G4','D5','D5','D5','G4',
+        'G4','G4','G4','D#4','F4','F4','F4','D4',
+      ],
+      'Eine kleine Nachtmusik – Mozart': [
+        'G4','D4','G4','D4','G4','D4','G5','D5','G5','D5','G5','D5',
+        'G5','A5','B5','C6','D6','D6','D6','B5','C6','D6','B5','G5',
+        'C6','B5','A5','B5','A5','G5','F#5','G5','A5','B5','D5','C5','B4','A4',
+        'D5','G4','B4','D5','G5','F#5','G5','A5','D5','C5','B4','A4','G4',
+      ],
+      'Menuett in G – Petzold/Bach': [
+        'D5','G4','A4','B4','C5','D5','G4','G4','E5','C5','D5','E5','F#5','G5','G4','G4',
+        'C5','D5','C5','B4','A4','B4','C5','B4','A4','G4','F#4','G4','A4','B4','G4','A4',
+        'D5','G4','A4','B4','C5','D5','G4','G4','E5','C5','D5','E5','F#5','G5','G4','G4',
+        'C5','D5','C5','B4','A4','B4','C5','A4','B4','C5','D5','A4','B4','G4','A4','G4',
+      ],
+    };
+
+    /** Wikipedia-Artikel (deutsch) zum jeweiligen Werk, verlinkt in der Infoleiste. */
+    static WIKI = {
+      'Für Elise – Beethoven': 'https://de.wikipedia.org/wiki/F%C3%BCr_Elise',
+      'Ode an die Freude – Beethoven': 'https://de.wikipedia.org/wiki/Ode_an_die_Freude',
+      'Symphonie Nr. 5 – Beethoven': 'https://de.wikipedia.org/wiki/5._Sinfonie_(Beethoven)',
+      'Eine kleine Nachtmusik – Mozart': 'https://de.wikipedia.org/wiki/Eine_kleine_Nachtmusik',
+      'Menuett in G – Petzold/Bach': 'https://de.wikipedia.org/wiki/Menuett_G-Dur_(BWV_Anh._114_und_115)',
+    };
+
     constructor(settings) {
       this.settings = settings;
       this._ctx = null;
+      this._melodyQueue = [];   // gemischte Reihenfolge der Werke
+      this._melody = null;      // aktuelle Notenliste
+      this._melodyName = '';    // Titel des aktuellen Werks
+      this._noteIndex = 0;
+      this.onMelodyChange = null; // Callback(name), wenn ein neues Werk beginnt
+    }
+
+    /** Titel des gerade gespielten Klassik-Werks (leer, wenn nicht aktiv). */
+    get currentMelodyName() {
+      return this._melodyName;
     }
 
     _ensureContext() {
@@ -945,10 +1004,66 @@
       return this._ctx;
     }
 
+    /**
+     * Wärmt die Audio-Ausgabe innerhalb einer Nutzergeste (Session-Start/Play) vor:
+     * erzeugt/entsperrt den AudioContext (resume() ist asynchron) und spielt einen
+     * unhörbaren Ton, damit die erste echte Note ohne Anlauf-Verzögerung erklingt.
+     */
+    warmUp() {
+      const ctx = this._ensureContext();
+      if (!ctx) return;
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      gain.gain.value = 0.00001; // praktisch stumm, nur zum Aufwecken der Ausgabe
+      osc.connect(gain).connect(ctx.destination);
+      osc.start();
+      osc.stop(ctx.currentTime + 0.02);
+    }
+
+    /** Notenname (z. B. „D#5") → Frequenz in Hz (gleichstufige Stimmung, A4=440). */
+    static noteToFreq(note) {
+      const map = { C: 0, 'C#': 1, D: 2, 'D#': 3, E: 4, F: 5, 'F#': 6, G: 7, 'G#': 8, A: 9, 'A#': 10, B: 11 };
+      const m = /^([A-G]#?)(\d)$/.exec(note);
+      if (!m) return 440;
+      const midi = (Number(m[2]) + 1) * 12 + map[m[1]];
+      return 440 * Math.pow(2, (midi - 69) / 12);
+    }
+
+    /** Liefert die nächste Note der Klassik-Sequenz; mischt am Ende neu durch. */
+    _nextClassicalFreq() {
+      if (!this._melody || this._noteIndex >= this._melody.length) {
+        if (this._melodyQueue.length === 0) {
+          // Alle Werke einmal, dann in neuer Zufallsreihenfolge wiederholen.
+          this._melodyQueue = Object.keys(SoundEngine.MELODIES).sort(() => Math.random() - 0.5);
+        }
+        this._melodyName = this._melodyQueue.shift();
+        this._melody = SoundEngine.MELODIES[this._melodyName];
+        this._noteIndex = 0;
+        this.onMelodyChange?.(this._melodyName);
+      }
+      return SoundEngine.noteToFreq(this._melody[this._noteIndex++]);
+    }
+
     playTick() {
       if (!this.settings.get('clickSoundEnabled')) return;
       const ctx = this._ensureContext();
       if (!ctx) return;
+
+      if (this.settings.get('clickSoundVariant') === 'klassik') {
+        // Klavierähnlicher Ton mit sanftem Ausklang je Note.
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.type = 'triangle';
+        osc.frequency.value = this._nextClassicalFreq();
+        gain.gain.setValueAtTime(0.0001, ctx.currentTime);
+        gain.gain.exponentialRampToValueAtTime(0.08, ctx.currentTime + 0.01);
+        gain.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + 0.28);
+        osc.connect(gain).connect(ctx.destination);
+        osc.start();
+        osc.stop(ctx.currentTime + 0.3);
+        return;
+      }
+
       const variant = SoundEngine.VARIANTS[this.settings.get('clickSoundVariant')] || SoundEngine.VARIANTS.click;
       const osc = ctx.createOscillator();
       const gain = ctx.createGain();
@@ -1532,11 +1647,15 @@
         flex: 1 1 auto; min-height: 0; height: auto; border-bottom: none;
       }
 
-      /* Superfokus: nur das aktuelle Wort, jegliche Steuer-/Statuszeilen ausgeblendet.
-         Funktioniert eigenständig (kompakte Pille) oder kombiniert mit Vollbild. */
-      .${NS}-toolbar.usr-superfocus .${NS}-superfocus-hide { display: none; }
-      .${NS}-toolbar.usr-superfocus .${NS}-display { border-bottom: none; padding-bottom: 0; }
-      .${NS}-toolbar.usr-superfocus:not(.usr-fullscreen-mode) { padding: 14px 20px; }
+      /* Ansichten:
+         - Kompakt (usr-view-compact): Regler/Optionen aus, Fortschritt + Infoleiste bleiben.
+         - Fokus (usr-view-focus): nur das aktuelle Wort. Kombinierbar mit Vollbild. */
+      .${NS}-toolbar.usr-view-compact .${NS}-hide-compact { display: none; }
+      .${NS}-toolbar.usr-view-compact:not(.usr-fullscreen-mode) { padding: 8px 14px; }
+      .${NS}-toolbar.usr-view-focus .${NS}-hide-compact,
+      .${NS}-toolbar.usr-view-focus .${NS}-hide-focus { display: none; }
+      .${NS}-toolbar.usr-view-focus .${NS}-display { border-bottom: none; padding-bottom: 0; }
+      .${NS}-toolbar.usr-view-focus:not(.usr-fullscreen-mode) { padding: 14px 20px; }
 
       .${NS}-display {
         position: relative; display: flex; align-items: center; justify-content: center;
@@ -1576,6 +1695,8 @@
 
       .${NS}-slider { width: 120px; accent-color: #4f46e5; }
       .${NS}-stat { font-size: 11px; opacity: .85; white-space: nowrap; }
+      .${NS}-melody-link { color: inherit; text-decoration: underline; text-underline-offset: 2px; cursor: pointer; }
+      .${NS}-melody-link:hover { color: #a5b4fc; }
       .${NS}-spacer { flex: 1 1 auto; }
       .${NS}-select {
         background: rgba(255,255,255,.08); color: inherit; border: none; border-radius: 6px;
@@ -1633,7 +1754,7 @@
       .${NS}-statsrow { font-variant-numeric: tabular-nums; }
       /* Notausstiegs-Zeile nur im Superfokus (sonst liegen die Aktionen in Zeile 3). */
       .${NS}-exit-row { display: none; }
-      .${NS}-toolbar.usr-superfocus .${NS}-exit-row { display: flex; }
+      .${NS}-toolbar.usr-view-focus .${NS}-exit-row { display: flex; }
 
       /* Verzögerte Hover-Hinweise. */
       .${NS}-tooltip {
@@ -1863,12 +1984,13 @@
       this.statRemaining = Utils.el('span', { class: `${NS}-stat`, text: '--:--' });
       this.statWpm = Utils.el('span', { class: `${NS}-stat`, text: `${s.get('wpm')} WPM` });
       this.statListLevel = Utils.el('span', { class: `${NS}-stat`, title: 'Verschachtelungstiefe der aktuellen Liste' });
+      this.statMelody = Utils.el('span', { class: `${NS}-stat ${NS}-stat-melody` });
 
       // Einheitliches Icon-Set statt gemischter Emoji/Symbole: einfacher Chevron = Wort-
       // Schritt, doppelter Chevron = Kapitel-Sprung – eindeutig unterscheidbar.
       const hotkeys = s.get('hotkeys');
       this.btnPrevChapter = Utils.el('button', {
-        class: `${NS}-btn`, title: `Vorherige Überschrift (${hotkeyLabel(hotkeys.prevChapter)})`,
+        class: `${NS}-btn`, title: `Vorherige Überschrift (⇧${hotkeyLabel(hotkeys.prev)} oder ${hotkeyLabel(hotkeys.prevChapter)})`,
         onclick: () => this.bus.emit('ui:prev-chapter'),
       }, [makeIcon('chevronsLeft')]);
       this.btnPrev = Utils.el('button', {
@@ -1885,7 +2007,7 @@
         onclick: () => this.bus.emit('ui:next'),
       }, [makeIcon('chevronRight')]);
       this.btnNextChapter = Utils.el('button', {
-        class: `${NS}-btn`, title: `Nächste Überschrift (${hotkeyLabel(hotkeys.nextChapter)})`,
+        class: `${NS}-btn`, title: `Nächste Überschrift (⇧${hotkeyLabel(hotkeys.next)} oder ${hotkeyLabel(hotkeys.nextChapter)})`,
         onclick: () => this.bus.emit('ui:next-chapter'),
       }, [makeIcon('chevronsRight')]);
       this.btnClose = Utils.el('button', {
@@ -1947,6 +2069,7 @@
         Utils.el('option', { value: 'blip', text: 'Blip' }),
         Utils.el('option', { value: 'wood', text: 'Holz' }),
         Utils.el('option', { value: 'bell', text: 'Glocke' }),
+        Utils.el('option', { value: 'klassik', text: 'Klassik 🎵' }),
       ]);
       this.clickSoundVariantSelect.value = s.get('clickSoundVariant');
 
@@ -1963,10 +2086,10 @@
       }, [makeIcon('maximize')]);
 
       this.btnSuperFocus = Utils.el('button', {
-        class: `${NS}-btn`, title: `Superfokus – nur das Wort anzeigen (${hotkeyLabel(hotkeys.superFocus)})`,
-        onclick: () => this.bus.emit('ui:toggle-super-focus'),
+        class: `${NS}-btn`, title: `Ansicht wechseln: Voll → Kompakt → Fokus (${hotkeyLabel(hotkeys.superFocus)})`,
+        onclick: () => this.bus.emit('ui:cycle-view'),
       }, [makeIcon('eye')]);
-      this.btnSuperFocus.classList.toggle('usr-active', s.get('superFocusMode'));
+      this.btnSuperFocus.classList.toggle('usr-active', s.get('viewMode') !== 'full');
 
       this.btnHelp = Utils.el('button', {
         class: `${NS}-btn`, title: 'Hilfe – Funktionen & Tastenkürzel',
@@ -1980,7 +2103,8 @@
       ]);
 
       // Zeile 1: Wiedergabe-Steuerung + Regler links, Aktions-Buttons rechts gruppiert.
-      const controlsRow = Utils.el('div', { class: `${NS}-row ${NS}-superfocus-hide` }, [
+      // usr-hide-compact = in Kompakt- UND Fokus-Ansicht ausgeblendet.
+      const controlsRow = Utils.el('div', { class: `${NS}-row ${NS}-hide-compact` }, [
         this.btnPrevChapter, this.btnPrev, this.btnStart, this.btnNext, this.btnNextChapter,
         divider(),
         Utils.el('span', { class: `${NS}-stat`, text: 'WPM' }), this.wpmSlider,
@@ -1990,7 +2114,7 @@
       ]);
 
       // Zeile 2: Optionen thematisch gruppiert (Anzeige · Tempo · Überspringen · Ton).
-      const toggleRow = Utils.el('div', { class: `${NS}-row ${NS}-superfocus-hide` }, [
+      const toggleRow = Utils.el('div', { class: `${NS}-row ${NS}-hide-compact` }, [
         group('Anzeige', this.toggleOrp, this.toggleOrpFixed, this.toggleSourceHighlight, this.toggleListZebra),
         divider(),
         group('Tempo', this.toggleAdaptive, this.togglePunct, this.toggleScroll),
@@ -2005,19 +2129,20 @@
       ]);
 
       // Zeile 3 (letzte): alle Laufzeit-Infos inkl. Restzeit/Timer + Aktions-Buttons rechts.
-      const statsRow = Utils.el('div', { class: `${NS}-row ${NS}-statsrow ${NS}-superfocus-hide` }, [
-        this.statChapter, this.statWords, this.statPercent, this.statRemaining, this.statWpm, this.statListLevel,
+      // usr-hide-focus = nur in der Fokus-Ansicht ausgeblendet (in Kompakt sichtbar).
+      const statsRow = Utils.el('div', { class: `${NS}-row ${NS}-statsrow ${NS}-hide-focus` }, [
+        this.statChapter, this.statWords, this.statPercent, this.statRemaining, this.statWpm, this.statListLevel, this.statMelody,
         Utils.el('div', { class: `${NS}-spacer` }),
         this.btnHelp, this.btnSuperFocus, this.btnFullscreen, this.togglePosition, this.btnClose,
       ]);
 
-      this.progressTrack.classList.add(`${NS}-superfocus-hide`);
+      this.progressTrack.classList.add(`${NS}-hide-focus`);
 
       // Im Superfokus ist Zeile 3 ausgeblendet – deshalb eine schlanke, immer sichtbare
       // Aktionszeile, damit man den Modus/Reader jederzeit verlassen kann.
       this.btnSuperFocusExit = Utils.el('button', {
-        class: `${NS}-btn`, title: `Superfokus beenden (${hotkeyLabel(hotkeys.superFocus)})`,
-        onclick: () => this.bus.emit('ui:toggle-super-focus'),
+        class: `${NS}-btn`, title: `Ansicht wechseln (${hotkeyLabel(hotkeys.superFocus)})`,
+        onclick: () => this.bus.emit('ui:cycle-view'),
       }, [makeIcon('eye')]);
       this.btnCloseExit = Utils.el('button', {
         class: `${NS}-btn`, title: `Schließen (${hotkeyLabel(hotkeys.close)})`,
@@ -2028,7 +2153,8 @@
         this.btnSuperFocusExit, this.btnCloseExit,
       ]);
 
-      return Utils.el('div', { class: `${NS}-toolbar ${NS}-ui ${posClass} ${themeClass}${s.get('superFocusMode') ? ' usr-superfocus' : ''}` }, [
+      const viewClass = s.get('viewMode') === 'compact' ? ' usr-view-compact' : s.get('viewMode') === 'focus' ? ' usr-view-focus' : '';
+      return Utils.el('div', { class: `${NS}-toolbar ${NS}-ui ${posClass} ${themeClass}${viewClass}` }, [
         this.display, this.progressTrack, controlsRow, toggleRow, statsRow, exitRow,
       ]);
     }
@@ -2089,13 +2215,32 @@
       };
       document.addEventListener('fullscreenchange', this._fullscreenChangeHandler);
 
-      this.bus.on('settings:super-focus-changed', ({ value }) => {
-        this.element.classList.toggle('usr-superfocus', value);
-        this.btnSuperFocus.classList.toggle('usr-active', value);
-        this.btnSuperFocusExit.classList.toggle('usr-active', value);
+      this.bus.on('settings:view-changed', ({ mode }) => {
+        this.element.classList.toggle('usr-view-compact', mode === 'compact');
+        this.element.classList.toggle('usr-view-focus', mode === 'focus');
+        this.btnSuperFocus.classList.toggle('usr-active', mode !== 'full');
+        this.btnSuperFocusExit.classList.toggle('usr-active', mode !== 'full');
       });
       this.bus.on('settings:click-sound-variant-changed', ({ variant }) => {
         this.clickSoundVariantSelect.value = variant;
+        if (variant !== 'klassik') this.statMelody.textContent = '';
+      });
+      // Aktuell gespieltes Klassik-Werk in der Infoleiste anzeigen (nur im Klassik-Modus),
+      // verlinkt auf den zugehörigen Wikipedia-Artikel.
+      this.bus.on('sound:melody', ({ name, url }) => {
+        const active = this.settings.get('clickSoundEnabled') && this.settings.get('clickSoundVariant') === 'klassik';
+        if (!active) { this.statMelody.replaceChildren(); return; }
+        if (url) {
+          this.statMelody.replaceChildren(Utils.el('a', {
+            class: `${NS}-melody-link`, href: url, target: '_blank', rel: 'noopener noreferrer',
+            text: `🎵 ${name}`, title: 'Wikipedia-Artikel öffnen',
+          }));
+        } else {
+          this.statMelody.textContent = `🎵 ${name}`;
+        }
+      });
+      this.bus.on('settings:click-sound-changed', ({ value }) => {
+        if (!value) this.statMelody.textContent = '';
       });
     }
 
@@ -2227,10 +2372,11 @@
       const shortcuts = [
         [hotkeyLabel(hk.togglePause), 'Start / Pause'],
         [`${hotkeyLabel(hk.prev)} / ${hotkeyLabel(hk.next)}`, 'Ein Wort zurück / vor'],
-        [`${hotkeyLabel(hk.prevChapter)} / ${hotkeyLabel(hk.nextChapter)}`, 'Vorherige / nächste Überschrift'],
+        [`⇧${hotkeyLabel(hk.prev)} / ⇧${hotkeyLabel(hk.next)}`, 'Vorherige / nächste Überschrift'],
+        [`${hotkeyLabel(hk.prevChapter)} / ${hotkeyLabel(hk.nextChapter)}`, 'Überschrift (Alternative)'],
         [`${hotkeyLabel(hk.faster)} / ${hotkeyLabel(hk.slower)}`, 'Schneller / langsamer (WPM)'],
         [hotkeyLabel(hk.fullscreen), 'Vollbild an/aus'],
-        [hotkeyLabel(hk.superFocus), 'Superfokus (nur das Wort)'],
+        [hotkeyLabel(hk.superFocus), 'Ansicht wechseln: Voll → Kompakt → Fokus'],
         [hotkeyLabel(hk.close), 'Reader schließen'],
       ];
       const features = [
@@ -2244,7 +2390,8 @@
         ['Listen-Streifen', 'Farbstreifen + „-" je Listenebene links im Textfeld.'],
         ['Klickton', 'Kurzer Ton je Wort, mit wählbarer Klangfarbe.'],
         ['Fokus', 'Rest der Seite abdunkeln / verwischen / ausblenden.'],
-        ['Superfokus', 'Blendet die ganze Bedienleiste aus – nur das Wort bleibt.'],
+        ['Ansichten', 'Voll (alles) → Kompakt (Wort + Fortschritt + Infoleiste) → Fokus (nur das Wort).'],
+        ['Klassik-Ton', 'Easter-Egg: spielt je Wort eine Note eines gemeinfreien Werks; Titel in der Infoleiste.'],
         ['Pause-Regler', 'Mindest-Anzeigedauer für übersprungene Tabellen/Bilder.'],
       ];
 
@@ -2355,6 +2502,18 @@
       // reagieren und den Lesefluss stören könnten (z. B. Pfeil hoch/runter,
       // die zusätzlich zum Tempo-Wechsel den Container hoch-/runterscrollen).
       const hotkeys = this.settings.get('hotkeys');
+
+      // Umschalt+Pfeil links/rechts = vorherige/nächste Überschrift. Alternative zu
+      // Bild↑/Bild↓, die auf vielen Mac-Tastaturen fehlen. Vor dem normalen Wort-
+      // Schritt (Pfeil ohne Umschalt) abfangen.
+      if (evt.shiftKey && (evt.code === hotkeys.prev || evt.code === hotkeys.next)) {
+        evt.preventDefault();
+        evt.stopPropagation();
+        this.bus.emit(evt.code === hotkeys.prev ? 'ui:prev-chapter' : 'ui:next-chapter');
+        this.bus.emit('ui:hotkey-fired');
+        return;
+      }
+
       switch (evt.code) {
         case hotkeys.togglePause:
           evt.preventDefault();
@@ -2408,7 +2567,7 @@
           } else if (key && key === hotkeys.superFocus) {
             evt.preventDefault();
             evt.stopPropagation();
-            this.bus.emit('ui:toggle-super-focus');
+            this.bus.emit('ui:cycle-view');
           } else {
             return;
           }
@@ -2539,6 +2698,7 @@
       this.focusMode = new FocusModeController();
       this.sourceHighlighter = new SourceHighlighter();
       this.soundEngine = new SoundEngine(this.settings);
+      this.soundEngine.onMelodyChange = (name) => this.bus.emit('sound:melody', { name, url: SoundEngine.WIKI[name] || '' });
 
       this.container = null;
       this.toolbar = null;
@@ -2582,6 +2742,9 @@
         this.reader.loadBlocks(blocks);
         this.scrollEngine.attach(container);
         this.scrollEngine.watchUserScroll(() => this.reader.pause());
+        // Container-Auswahl ist eine Nutzergeste – hier den AudioContext vorwärmen,
+        // damit der erste Klickton ohne Verzögerung kommt.
+        this.soundEngine.warmUp();
 
         this.toolbar = new Toolbar(this.bus, this.settings);
         this._mountToolbar();
@@ -2787,7 +2950,11 @@
         this.bus.emit('settings:placeholder-pause-changed', { ms });
       });
 
-      this.bus.on('ui:toggle-click-sound', ({ value }) => this.settings.set('clickSoundEnabled', value));
+      this.bus.on('ui:toggle-click-sound', ({ value }) => {
+        this.settings.set('clickSoundEnabled', value);
+        if (value) this.soundEngine.warmUp();
+        this.bus.emit('settings:click-sound-changed', { value });
+      });
 
       this.bus.on('ui:focus-mode-set', ({ mode }) => {
         this.settings.set('focusMode', mode);
@@ -2818,10 +2985,12 @@
         }
       });
 
-      this.bus.on('ui:toggle-super-focus', () => {
-        const next = !this.settings.get('superFocusMode');
-        this.settings.set('superFocusMode', next);
-        this.bus.emit('settings:super-focus-changed', { value: next });
+      this.bus.on('ui:cycle-view', () => {
+        const order = ['full', 'compact', 'focus'];
+        const cur = order.indexOf(this.settings.get('viewMode'));
+        const next = order[(cur + 1) % order.length];
+        this.settings.set('viewMode', next);
+        this.bus.emit('settings:view-changed', { mode: next });
       });
 
       this.bus.on('ui:toggle-help', () => HelpPanel.toggle(this.settings, this.settings.get('theme')));

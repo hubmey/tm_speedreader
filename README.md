@@ -36,7 +36,8 @@ oder unten verschieben.
 | --- | --- |
 | `Leertaste` | Start / Pause |
 | `←` / `→` | Ein Wort zurück / vor |
-| `Bild↑` / `Bild↓` | Vorherige / nächste Überschrift |
+| `⇧←` / `⇧→` | Vorherige / nächste Überschrift |
+| `Bild↑` / `Bild↓` | Überschrift (Alternative) |
 | `↑` / `↓` | Schneller / langsamer (WPM) |
 | `F` | Vollbild an/aus |
 | `Z` | Superfokus (nur das Wort) |
@@ -83,6 +84,11 @@ Vollbild, Position und Schließen.
 - Sanftes, wortgenaues Auto-Scrolling; manuelles Scrollen pausiert automatisch
   und springt beim Fortsetzen zurück zur Leseposition.
 - Optionaler **Klickton** je Wort mit mehreren Klangfarben.
+
+  > 🥚🎵 Probier doch mal den Tonmodus **Klassik** — jedes Wort spielt die nächste
+  > Note eines gemeinfreien Werks (Für Elise, Ode an die Freude, …), in zufälliger
+  > Reihenfolge. Der Titel steht dann in der Infoleiste und verlinkt auf Wikipedia.
+  > Es könnte dir gefallen. 😉
 - **Statistik** nach Sitzungsende (Gesamtzeit, Ø-WPM, effektive WPM, Wortzahl,
   geschätzte Zeitersparnis) — optional, mit optionalem Auto-Schließen.
 - Einstellbare Schriftgröße, Toolbar-Position und Theme.
