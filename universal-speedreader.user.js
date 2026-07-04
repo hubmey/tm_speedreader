@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Universal SpeedReader
 // @namespace    https://github.com/hubmey/tm_speedreader.git
-// @version      1.17.0
+// @version      1.18.0
 // @description  RSVP/ORP Speedreader für nahezu jede textbasierte Webseite, mit synchronem Auto-Scroll des Originalcontainers.
 // @author       Hubertus Meyer
 // @match        *://*/*
@@ -84,14 +84,6 @@
     maxPlaceholderPauseMs: 3000,
     clickSoundEnabled: false, // kurzer Klickton bei jedem neuen Wort
     clickSoundVariant: 'click', // 'click' | 'soft' | 'blip' | 'wood' | 'bell'
-    ttsEnabled: false,   // jedes Wort zusätzlich per Sprachausgabe (Web Speech API) vorlesen
-    ttsAutoRate: true,   // Sprechtempo automatisch aus WPM ableiten (kein Abbrechen einzelner Wörter nötig)
-    ttsRate: 1,          // manuelles Sprechtempo bzw. Feinjustierungs-Faktor bei Auto-Modus
-    minTtsRate: 0.5,
-    maxTtsRate: 4,       // Web-Speech erlaubt bis 10; >4 klingt kaum noch verständlich
-    ttsNaturalWpm: 150,  // ungefähre Wörter/Minute bei rate=1 (Basis der Auto-Tempo-Rechnung)
-    ttsVolume: 1,
-    ttsVoiceURI: '',     // '' = automatische Wahl einer möglichst natürlichen deutschen Stimme
     displayFontSize: 30,      // Schriftgröße (px) der Wortanzeige
     minFontSize: 14,
     maxFontSize: 72,
@@ -971,94 +963,6 @@
     dispose() {
       this._ctx?.close();
       this._ctx = null;
-    }
-  }
-
-  /**
-   * Optionale Sprachausgabe (Web Speech API) – liest jedes angezeigte Wort per
-   * SpeechSynthesis vor, parallel zur visuellen RSVP-Anzeige. Eine neue
-   * Utterance pro Wort ersetzt (cancel()) sofort die vorherige, damit sich bei
-   * höherem WPM keine Sprechwarteschlange aufstaut und die Ausgabe nicht immer
-   * weiter hinter der Anzeige zurückfällt. Bei sehr hohem WPM kann die Sprache
-   * dennoch nicht mit jedem Wort exakt Schritt halten – technische Grenze der
-   * Speech-Synthesis-API, kein Bug.
-   */
-  class TTSEngine {
-    constructor(settings) {
-      this.settings = settings;
-      this._supported = 'speechSynthesis' in window;
-      this._voices = [];
-      if (this._supported) {
-        this._loadVoices();
-        window.speechSynthesis.addEventListener?.('voiceschanged', () => this._loadVoices());
-      }
-    }
-
-    _loadVoices() {
-      this._voices = window.speechSynthesis.getVoices();
-    }
-
-    isSupported() {
-      return this._supported;
-    }
-
-    getVoices() {
-      return this._voices;
-    }
-
-    /**
-     * Wählt automatisch eine möglichst natürliche deutsche Stimme, wenn der
-     * Nutzer keine feste gewählt hat. Bevorzugt (in dieser Reihenfolge) bekannte
-     * höherwertige Namen (Siri/„Enhanced"/Google/Premium) vor den robotischen
-     * Standardstimmen. Alle Kandidaten sind auf de-* Sprachen beschränkt.
-     */
-    _resolveVoice() {
-      const chosen = this.settings.get('ttsVoiceURI');
-      if (chosen) {
-        const v = this._voices.find((x) => x.voiceURI === chosen);
-        if (v) return v;
-      }
-      const german = this._voices.filter((v) => /^de(-|_|$)/i.test(v.lang));
-      if (german.length === 0) return null;
-      // Bekannte natürlichere Stimmen bevorzugen (neuere macOS-Expressive-Stimmen,
-      // Siri/Enhanced/Premium/Neural, Google). „Anna" ist die alte, robotisch
-      // klingende macOS-Standardstimme und wird als letztes gewählt.
-      const nice = /siri|enhanced|premium|neural|natural|google|eddy|flo|reed|rocko|sandy|grandma|grandpa|shelley|nicky|petra|markus|viktor|yannick|helena/i;
-      const isAnna = (v) => /^anna\b/i.test(v.name);
-      return german.find((v) => nice.test(v.name)) ||
-             german.find((v) => !v.localService) ||   // Netz-Stimmen (z. B. Google) klingen oft besser
-             german.find((v) => !isAnna(v)) ||        // irgendeine Nicht-Anna-Stimme
-             german[0];
-    }
-
-    /** Leitet das Sprechtempo (utterance.rate) aus der WPM ab, damit ein Wort
-     *  genau in sein Anzeige-Zeitfenster passt – dadurch kein Abbrechen nötig. */
-    _computeRate() {
-      const s = this.settings;
-      const userFactor = s.get('ttsRate') || 1;
-      if (!s.get('ttsAutoRate')) return Utils.clamp(userFactor, 0.1, 10);
-      const wpm = s.get('wpm');
-      const natural = Math.max(60, s.get('ttsNaturalWpm'));
-      return Utils.clamp((wpm / natural) * userFactor, s.get('minTtsRate'), s.get('maxTtsRate'));
-    }
-
-    speak(text) {
-      if (!this._supported || !this.settings.get('ttsEnabled') || !text) return;
-      // KEIN cancel() pro Wort: Wenn noch gesprochen wird, dieses Wort einfach
-      // überspringen (visuell läuft es weiter). Bei aus der WPM abgeleitetem Tempo
-      // endet die Ausgabe rechtzeitig, sodass Überspringen selten vorkommt und die
-      // Sprache flüssig statt abgehackt klingt.
-      if (window.speechSynthesis.speaking || window.speechSynthesis.pending) return;
-      const utterance = new SpeechSynthesisUtterance(text);
-      utterance.rate = this._computeRate();
-      utterance.volume = this.settings.get('ttsVolume');
-      const voice = this._resolveVoice();
-      if (voice) { utterance.voice = voice; utterance.lang = voice.lang; }
-      window.speechSynthesis.speak(utterance);
-    }
-
-    stop() {
-      if (this._supported) window.speechSynthesis.cancel();
     }
   }
 
@@ -1945,25 +1849,6 @@
       this.toggleClickSound = this._makeToggle('Klickton', 'clickSoundEnabled', 'ui:toggle-click-sound');
       this.toggleShowStats = this._makeToggle('Zusammenfassung', 'showStatsOnFinish', 'ui:toggle-show-stats');
       this.toggleAutoClose = this._makeToggle('Autom. schließen', 'autoCloseAfterFinish', 'ui:toggle-auto-close');
-      this.toggleTts = this._makeToggle('Vorlesen (TTS)', 'ttsEnabled', 'ui:toggle-tts');
-      this.toggleTtsAutoRate = this._makeToggle('TTS-Tempo autom.', 'ttsAutoRate', 'ui:toggle-tts-auto-rate');
-
-      this.statTtsRate = Utils.el('span', { class: `${NS}-stat`, text: `${s.get('ttsRate').toFixed(1)}x` });
-      this.ttsRateSlider = Utils.el('input', {
-        class: `${NS}-slider`, type: 'range',
-        min: s.get('minTtsRate'), max: s.get('maxTtsRate'), step: 0.1, value: s.get('ttsRate'),
-        title: 'Sprechtempo (bei „TTS-Tempo autom." ein Feinjustierungs-Faktor auf das aus WPM abgeleitete Tempo)',
-        oninput: (e) => this.bus.emit('ui:tts-rate-set', { rate: Number(e.target.value) }),
-      });
-
-      this.ttsVoiceSelect = Utils.el('select', {
-        class: `${NS}-select`, title: 'Stimme der Sprachausgabe',
-        onchange: (e) => this.bus.emit('ui:tts-voice-set', { voiceURI: e.target.value }),
-      });
-      this._populateTtsVoices();
-      if ('speechSynthesis' in window) {
-        window.speechSynthesis.addEventListener?.('voiceschanged', () => this._populateTtsVoices());
-      }
 
       this.clickSoundVariantSelect = Utils.el('select', {
         class: `${NS}-select`, title: 'Klangfarbe des Klicktons',
@@ -1998,7 +1883,6 @@
         Utils.el('span', { class: `${NS}-stat`, text: 'WPM' }), this.wpmSlider, this.statWpm,
         Utils.el('span', { class: `${NS}-stat`, text: 'Schrift' }), this.fontSizeSlider, this.statFontSize,
         Utils.el('span', { class: `${NS}-stat`, text: 'Platzh.-Pause' }), this.placeholderPauseSlider, this.statPlaceholderPause,
-        Utils.el('span', { class: `${NS}-stat`, text: 'TTS-Tempo' }), this.ttsRateSlider, this.statTtsRate,
         Utils.el('div', { class: `${NS}-spacer` }),
         this.btnFullscreen, this.togglePosition,
       ]);
@@ -2007,7 +1891,7 @@
         this.toggleOrp, this.toggleOrpFixed, this.toggleScroll, this.toggleAdaptive, this.togglePunct,
         this.toggleCaptions, this.toggleCitations, this.toggleTables, this.toggleSourceHighlight,
         this.toggleListZebra, this.toggleClickSound, this.clickSoundVariantSelect,
-        this.toggleTts, this.toggleTtsAutoRate, this.ttsVoiceSelect, this.focusModeSelect,
+        this.focusModeSelect,
       ]);
 
       const statsRow = Utils.el('div', { class: `${NS}-row ${NS}-superfocus-hide` }, [
@@ -2045,25 +1929,6 @@
       return wrapper;
     }
 
-    /** Füllt/aktualisiert die Stimmenauswahl (Web Speech API liefert Stimmen oft erst asynchron). */
-    _populateTtsVoices() {
-      if (!('speechSynthesis' in window)) {
-        this.ttsVoiceSelect.disabled = true;
-        this.ttsVoiceSelect.replaceChildren(Utils.el('option', { value: '', text: 'TTS nicht unterstützt' }));
-        return;
-      }
-      const voices = window.speechSynthesis.getVoices();
-      const current = this.settings.get('ttsVoiceURI');
-      // Deutsche Stimmen zuerst (praktisch für den Auto-Standard), Rest danach.
-      const isGerman = (v) => /^de(-|_|$)/i.test(v.lang);
-      const sorted = [...voices].sort((a, b) => (isGerman(b) - isGerman(a)) || a.name.localeCompare(b.name));
-      this.ttsVoiceSelect.replaceChildren(
-        Utils.el('option', { value: '', text: 'Auto (beste deutsche Stimme)' }),
-        ...sorted.map((v) => Utils.el('option', { value: v.voiceURI, text: `${v.name} (${v.lang})${v.localService ? '' : ' ☁'}` }))
-      );
-      this.ttsVoiceSelect.value = current || '';
-    }
-
     _handleSeekClick(evt) {
       const rect = this.progressTrack.getBoundingClientRect();
       const ratio = Utils.clamp((evt.clientX - rect.left) / rect.width, 0, 1);
@@ -2090,10 +1955,6 @@
       this.bus.on('settings:placeholder-pause-changed', ({ ms }) => {
         this.placeholderPauseSlider.value = ms;
         this.statPlaceholderPause.textContent = `${(ms / 1000).toFixed(1)}s`;
-      });
-      this.bus.on('settings:tts-rate-changed', ({ rate }) => {
-        this.ttsRateSlider.value = rate;
-        this.statTtsRate.textContent = `${rate.toFixed(1)}x`;
       });
 
       // Icon/Zustand nachführen, auch wenn Vollbild anders verlassen wird (z. B. ESC).
@@ -2498,7 +2359,6 @@
       this.focusMode = new FocusModeController();
       this.sourceHighlighter = new SourceHighlighter();
       this.soundEngine = new SoundEngine(this.settings);
-      this.ttsEngine = new TTSEngine(this.settings);
 
       this.container = null;
       this.toolbar = null;
@@ -2706,12 +2566,6 @@
         if (this.reader.state === ReaderState.PLAYING) this._resyncScroll();
       });
       this.bus.on('ui:stop', () => { this.reader.stop(); this._persistPosition(); });
-
-      // TTS nicht weiterreden lassen, sobald der Reader nicht mehr aktiv spielt
-      // (Pause/Stopp/Ende) – sonst spricht die letzte Utterance ungestört zu Ende.
-      this.bus.on('reader:state', ({ state }) => {
-        if (state !== ReaderState.PLAYING) this.ttsEngine.stop();
-      });
       this.bus.on('ui:next', () => { this.reader.pause(); this.reader.next(); });
       this.bus.on('ui:prev', () => { this.reader.pause(); this.reader.prev(); });
       this.bus.on('ui:next-chapter', () => { this.reader.pause(); this.reader.nextChapter(); });
@@ -2740,17 +2594,6 @@
       });
 
       this.bus.on('ui:toggle-list-zebra', ({ value }) => this.settings.set('listZebraStripes', value));
-
-      this.bus.on('ui:toggle-tts', ({ value }) => {
-        this.settings.set('ttsEnabled', value);
-        if (!value) this.ttsEngine.stop();
-      });
-      this.bus.on('ui:tts-rate-set', ({ rate }) => {
-        this.settings.set('ttsRate', rate);
-        this.bus.emit('settings:tts-rate-changed', { rate });
-      });
-      this.bus.on('ui:tts-voice-set', ({ voiceURI }) => this.settings.set('ttsVoiceURI', voiceURI));
-      this.bus.on('ui:toggle-tts-auto-rate', ({ value }) => this.settings.set('ttsAutoRate', value));
 
       this.bus.on('ui:hotkey-fired', () => this.scrollEngine.suppressUserScrollDetection());
 
@@ -2826,7 +2669,6 @@
           this.sourceHighlighter.clear();
         }
         this.soundEngine.playTick();
-        this.ttsEngine.speak(data.token?.text);
       });
 
       this.bus.on('reader:finished', (stats) => {
