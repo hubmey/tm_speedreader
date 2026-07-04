@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Universal SpeedReader
 // @namespace    https://github.com/hubmey/tm_speedreader.git
-// @version      1.20.0
+// @version      1.21.0
 // @description  RSVP/ORP Speedreader für nahezu jede textbasierte Webseite, mit synchronem Auto-Scroll des Originalcontainers.
 // @author       Hubertus Meyer
 // @match        *://*/*
@@ -83,7 +83,7 @@
     minPlaceholderPauseMs: 300,
     maxPlaceholderPauseMs: 3000,
     clickSoundEnabled: false, // kurzer Klickton bei jedem neuen Wort
-    clickSoundVariant: 'click', // 'click' | 'soft' | 'blip' | 'wood' | 'bell'
+    clickSoundVariant: 'click', // 'click' | 'soft' | 'blip' | 'wood' | 'bell' | 'klassik'
     displayFontSize: 30,      // Schriftgröße (px) der Wortanzeige
     minFontSize: 14,
     maxFontSize: 72,
@@ -930,9 +930,26 @@
       bell: { type: 'sine', freq: 1400, duration: 0.12, gain: 0.04 },
     };
 
+    /**
+     * Easter-Egg „Klassik": jedes Wort spielt die nächste Note einer gemeinfreien
+     * klassischen Melodie. Fünf Werke (alle > 100 Jahre alt, damit gemeinfrei) als
+     * Notennamen-Sequenz; sie werden in zufälliger Reihenfolge nacheinander
+     * abgespielt. Reine Anfangsmotive – nur zur Erkennung, keine Vollwerke.
+     */
+    static MELODIES = {
+      'Für Elise (Beethoven)': ['E5','D#5','E5','D#5','E5','B4','D5','C5','A4','C4','E4','A4','B4','E4','G#4','B4','C5'],
+      'Ode an die Freude (Beethoven)': ['E4','E4','F4','G4','G4','F4','E4','D4','C4','C4','D4','E4','E4','D4','D4'],
+      'Symphonie Nr. 5 (Beethoven)': ['G4','G4','G4','D#4','F4','F4','F4','D4'],
+      'Eine kleine Nachtmusik (Mozart)': ['G4','D4','G4','D4','G4','D4','G5','D5','G5','D5','G5','D5'],
+      'Menuett in G (Petzold/Bach)': ['D5','G4','A4','B4','C5','D5','G4','G4','E5','C5','D5','E5','F#5','G5','G4','G4'],
+    };
+
     constructor(settings) {
       this.settings = settings;
       this._ctx = null;
+      this._melodyQueue = [];   // gemischte Reihenfolge der Werke
+      this._melody = null;      // aktuelle Notenliste
+      this._noteIndex = 0;
     }
 
     _ensureContext() {
@@ -945,10 +962,48 @@
       return this._ctx;
     }
 
+    /** Notenname (z. B. „D#5") → Frequenz in Hz (gleichstufige Stimmung, A4=440). */
+    static noteToFreq(note) {
+      const map = { C: 0, 'C#': 1, D: 2, 'D#': 3, E: 4, F: 5, 'F#': 6, G: 7, 'G#': 8, A: 9, 'A#': 10, B: 11 };
+      const m = /^([A-G]#?)(\d)$/.exec(note);
+      if (!m) return 440;
+      const midi = (Number(m[2]) + 1) * 12 + map[m[1]];
+      return 440 * Math.pow(2, (midi - 69) / 12);
+    }
+
+    /** Liefert die nächste Note der Klassik-Sequenz; mischt am Ende neu durch. */
+    _nextClassicalFreq() {
+      if (!this._melody || this._noteIndex >= this._melody.length) {
+        if (this._melodyQueue.length === 0) {
+          // Alle Werke einmal, dann in neuer Zufallsreihenfolge wiederholen.
+          this._melodyQueue = Object.keys(SoundEngine.MELODIES).sort(() => Math.random() - 0.5);
+        }
+        this._melody = SoundEngine.MELODIES[this._melodyQueue.shift()];
+        this._noteIndex = 0;
+      }
+      return SoundEngine.noteToFreq(this._melody[this._noteIndex++]);
+    }
+
     playTick() {
       if (!this.settings.get('clickSoundEnabled')) return;
       const ctx = this._ensureContext();
       if (!ctx) return;
+
+      if (this.settings.get('clickSoundVariant') === 'klassik') {
+        // Klavierähnlicher Ton mit sanftem Ausklang je Note.
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.type = 'triangle';
+        osc.frequency.value = this._nextClassicalFreq();
+        gain.gain.setValueAtTime(0.0001, ctx.currentTime);
+        gain.gain.exponentialRampToValueAtTime(0.08, ctx.currentTime + 0.01);
+        gain.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + 0.28);
+        osc.connect(gain).connect(ctx.destination);
+        osc.start();
+        osc.stop(ctx.currentTime + 0.3);
+        return;
+      }
+
       const variant = SoundEngine.VARIANTS[this.settings.get('clickSoundVariant')] || SoundEngine.VARIANTS.click;
       const osc = ctx.createOscillator();
       const gain = ctx.createGain();
@@ -1947,6 +2002,7 @@
         Utils.el('option', { value: 'blip', text: 'Blip' }),
         Utils.el('option', { value: 'wood', text: 'Holz' }),
         Utils.el('option', { value: 'bell', text: 'Glocke' }),
+        Utils.el('option', { value: 'klassik', text: 'Klassik 🎵' }),
       ]);
       this.clickSoundVariantSelect.value = s.get('clickSoundVariant');
 
