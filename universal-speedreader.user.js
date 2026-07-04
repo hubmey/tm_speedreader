@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Universal SpeedReader
 // @namespace    https://github.com/hubmey/tm_speedreader.git
-// @version      1.18.0
+// @version      1.19.0
 // @description  RSVP/ORP Speedreader für nahezu jede textbasierte Webseite, mit synchronem Auto-Scroll des Originalcontainers.
 // @author       Hubertus Meyer
 // @match        *://*/*
@@ -1510,6 +1510,13 @@
         border-radius: 8px 0 0 8px; pointer-events: none;
         transition: background-color .12s ease;
       }
+      /* Ebenen-Markierung („-" je Ebene) im linken Farbstreifen, über dem Farbfeld. */
+      .${NS}-zebra-marker {
+        position: absolute; left: 0; top: 0; bottom: 0; width: 10%;
+        display: flex; align-items: center; justify-content: center;
+        color: rgba(0,0,0,.55); font-weight: 700; font-size: 14px; letter-spacing: 0;
+        white-space: nowrap; overflow: hidden; pointer-events: none;
+      }
 
       /* Vollbild: der Reader selbst füllt die komplette Seite statt einer kleinen
          Leiste – große, vertikal zentrierte Wortanzeige, Steuerung unten kompakt. */
@@ -1752,12 +1759,14 @@
       this.wordFocus = Utils.el('span', { class: `${NS}-orp-focus` });
       this.wordAfter = Utils.el('span', { class: `${NS}-word-after` });
       this.refLine = Utils.el('div', { class: `${NS}-refline` });
+      // Textmarkierung im linken Farbstreifen (ein „-" je Listenebene).
+      this.zebraMarker = Utils.el('div', { class: `${NS}-zebra-marker` });
 
       this.display = Utils.el('div', {
         class: `${NS}-display${s.get('orpFixedPoint') ? ' usr-orp-fixed' : ''}`,
         style: `font-size: ${s.get('displayFontSize')}px;`,
       }, [
-        this.refLine, this.wordBefore, this.wordFocus, this.wordAfter,
+        this.refLine, this.zebraMarker, this.wordBefore, this.wordFocus, this.wordAfter,
       ]);
 
       this.progressFill = Utils.el('div', { class: `${NS}-progress-fill` });
@@ -2024,6 +2033,7 @@
         `${NS}-zebra-lvl-1`, `${NS}-zebra-lvl-2`, `${NS}-zebra-lvl-3`
       );
       if (this.statListLevel) this.statListLevel.textContent = '';
+      if (this.zebraMarker) this.zebraMarker.textContent = '';
       if (!this.settings.get('listZebraStripes') || block?.type !== BlockType.LIST || localIndex == null) return;
       const range = block.getWordRanges()[localIndex];
       const li = range?.startNode?.parentElement?.closest('li');
@@ -2043,6 +2053,8 @@
 
       this.display.classList.add(`${NS}-zebra-lvl-${level}`, liIndex % 2 === 0 ? `${NS}-zebra-a` : `${NS}-zebra-b`);
       if (this.statListLevel) this.statListLevel.textContent = '●'.repeat(depth) + ` Ebene ${depth}`;
+      // Ein „-" je Ebene, mit Leerzeichen davor und danach, innerhalb des Farbfelds.
+      if (this.zebraMarker) this.zebraMarker.textContent = ' - '.repeat(depth);
     }
 
     _renderToken({ token, block, localIndex, index, total, progress, remainingSeconds, chapter }) {
