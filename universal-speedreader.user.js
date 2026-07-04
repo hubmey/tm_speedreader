@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Universal SpeedReader
 // @namespace    https://github.com/hubmey/tm_speedreader.git
-// @version      1.16.0
+// @version      1.17.0
 // @description  RSVP/ORP Speedreader für nahezu jede textbasierte Webseite, mit synchronem Auto-Scroll des Originalcontainers.
 // @author       Hubertus Meyer
 // @match        *://*/*
@@ -85,11 +85,13 @@
     clickSoundEnabled: false, // kurzer Klickton bei jedem neuen Wort
     clickSoundVariant: 'click', // 'click' | 'soft' | 'blip' | 'wood' | 'bell'
     ttsEnabled: false,   // jedes Wort zusätzlich per Sprachausgabe (Web Speech API) vorlesen
-    ttsRate: 1,          // Sprechgeschwindigkeit (0.5–2), unabhängig von WPM
+    ttsAutoRate: true,   // Sprechtempo automatisch aus WPM ableiten (kein Abbrechen einzelner Wörter nötig)
+    ttsRate: 1,          // manuelles Sprechtempo bzw. Feinjustierungs-Faktor bei Auto-Modus
     minTtsRate: 0.5,
-    maxTtsRate: 2,
+    maxTtsRate: 4,       // Web-Speech erlaubt bis 10; >4 klingt kaum noch verständlich
+    ttsNaturalWpm: 150,  // ungefähre Wörter/Minute bei rate=1 (Basis der Auto-Tempo-Rechnung)
     ttsVolume: 1,
-    ttsVoiceURI: '',     // '' = Browser-/System-Standardstimme
+    ttsVoiceURI: '',     // '' = automatische Wahl einer möglichst natürlichen deutschen Stimme
     displayFontSize: 30,      // Schriftgröße (px) der Wortanzeige
     minFontSize: 14,
     maxFontSize: 72,
@@ -1004,17 +1006,54 @@
       return this._voices;
     }
 
+    /**
+     * Wählt automatisch eine möglichst natürliche deutsche Stimme, wenn der
+     * Nutzer keine feste gewählt hat. Bevorzugt (in dieser Reihenfolge) bekannte
+     * höherwertige Namen (Siri/„Enhanced"/Google/Premium) vor den robotischen
+     * Standardstimmen. Alle Kandidaten sind auf de-* Sprachen beschränkt.
+     */
+    _resolveVoice() {
+      const chosen = this.settings.get('ttsVoiceURI');
+      if (chosen) {
+        const v = this._voices.find((x) => x.voiceURI === chosen);
+        if (v) return v;
+      }
+      const german = this._voices.filter((v) => /^de(-|_|$)/i.test(v.lang));
+      if (german.length === 0) return null;
+      // Bekannte natürlichere Stimmen bevorzugen (neuere macOS-Expressive-Stimmen,
+      // Siri/Enhanced/Premium/Neural, Google). „Anna" ist die alte, robotisch
+      // klingende macOS-Standardstimme und wird als letztes gewählt.
+      const nice = /siri|enhanced|premium|neural|natural|google|eddy|flo|reed|rocko|sandy|grandma|grandpa|shelley|nicky|petra|markus|viktor|yannick|helena/i;
+      const isAnna = (v) => /^anna\b/i.test(v.name);
+      return german.find((v) => nice.test(v.name)) ||
+             german.find((v) => !v.localService) ||   // Netz-Stimmen (z. B. Google) klingen oft besser
+             german.find((v) => !isAnna(v)) ||        // irgendeine Nicht-Anna-Stimme
+             german[0];
+    }
+
+    /** Leitet das Sprechtempo (utterance.rate) aus der WPM ab, damit ein Wort
+     *  genau in sein Anzeige-Zeitfenster passt – dadurch kein Abbrechen nötig. */
+    _computeRate() {
+      const s = this.settings;
+      const userFactor = s.get('ttsRate') || 1;
+      if (!s.get('ttsAutoRate')) return Utils.clamp(userFactor, 0.1, 10);
+      const wpm = s.get('wpm');
+      const natural = Math.max(60, s.get('ttsNaturalWpm'));
+      return Utils.clamp((wpm / natural) * userFactor, s.get('minTtsRate'), s.get('maxTtsRate'));
+    }
+
     speak(text) {
       if (!this._supported || !this.settings.get('ttsEnabled') || !text) return;
-      window.speechSynthesis.cancel();
+      // KEIN cancel() pro Wort: Wenn noch gesprochen wird, dieses Wort einfach
+      // überspringen (visuell läuft es weiter). Bei aus der WPM abgeleitetem Tempo
+      // endet die Ausgabe rechtzeitig, sodass Überspringen selten vorkommt und die
+      // Sprache flüssig statt abgehackt klingt.
+      if (window.speechSynthesis.speaking || window.speechSynthesis.pending) return;
       const utterance = new SpeechSynthesisUtterance(text);
-      utterance.rate = this.settings.get('ttsRate');
+      utterance.rate = this._computeRate();
       utterance.volume = this.settings.get('ttsVolume');
-      const voiceURI = this.settings.get('ttsVoiceURI');
-      if (voiceURI) {
-        const voice = this._voices.find((v) => v.voiceURI === voiceURI);
-        if (voice) utterance.voice = voice;
-      }
+      const voice = this._resolveVoice();
+      if (voice) { utterance.voice = voice; utterance.lang = voice.lang; }
       window.speechSynthesis.speak(utterance);
     }
 
@@ -1907,12 +1946,13 @@
       this.toggleShowStats = this._makeToggle('Zusammenfassung', 'showStatsOnFinish', 'ui:toggle-show-stats');
       this.toggleAutoClose = this._makeToggle('Autom. schließen', 'autoCloseAfterFinish', 'ui:toggle-auto-close');
       this.toggleTts = this._makeToggle('Vorlesen (TTS)', 'ttsEnabled', 'ui:toggle-tts');
+      this.toggleTtsAutoRate = this._makeToggle('TTS-Tempo autom.', 'ttsAutoRate', 'ui:toggle-tts-auto-rate');
 
       this.statTtsRate = Utils.el('span', { class: `${NS}-stat`, text: `${s.get('ttsRate').toFixed(1)}x` });
       this.ttsRateSlider = Utils.el('input', {
         class: `${NS}-slider`, type: 'range',
         min: s.get('minTtsRate'), max: s.get('maxTtsRate'), step: 0.1, value: s.get('ttsRate'),
-        title: 'Sprechgeschwindigkeit der Sprachausgabe',
+        title: 'Sprechtempo (bei „TTS-Tempo autom." ein Feinjustierungs-Faktor auf das aus WPM abgeleitete Tempo)',
         oninput: (e) => this.bus.emit('ui:tts-rate-set', { rate: Number(e.target.value) }),
       });
 
@@ -1967,7 +2007,7 @@
         this.toggleOrp, this.toggleOrpFixed, this.toggleScroll, this.toggleAdaptive, this.togglePunct,
         this.toggleCaptions, this.toggleCitations, this.toggleTables, this.toggleSourceHighlight,
         this.toggleListZebra, this.toggleClickSound, this.clickSoundVariantSelect,
-        this.toggleTts, this.ttsVoiceSelect, this.focusModeSelect,
+        this.toggleTts, this.toggleTtsAutoRate, this.ttsVoiceSelect, this.focusModeSelect,
       ]);
 
       const statsRow = Utils.el('div', { class: `${NS}-row ${NS}-superfocus-hide` }, [
@@ -2014,9 +2054,12 @@
       }
       const voices = window.speechSynthesis.getVoices();
       const current = this.settings.get('ttsVoiceURI');
+      // Deutsche Stimmen zuerst (praktisch für den Auto-Standard), Rest danach.
+      const isGerman = (v) => /^de(-|_|$)/i.test(v.lang);
+      const sorted = [...voices].sort((a, b) => (isGerman(b) - isGerman(a)) || a.name.localeCompare(b.name));
       this.ttsVoiceSelect.replaceChildren(
-        Utils.el('option', { value: '', text: 'Standardstimme' }),
-        ...voices.map((v) => Utils.el('option', { value: v.voiceURI, text: `${v.name} (${v.lang})` }))
+        Utils.el('option', { value: '', text: 'Auto (beste deutsche Stimme)' }),
+        ...sorted.map((v) => Utils.el('option', { value: v.voiceURI, text: `${v.name} (${v.lang})${v.localService ? '' : ' ☁'}` }))
       );
       this.ttsVoiceSelect.value = current || '';
     }
@@ -2707,6 +2750,7 @@
         this.bus.emit('settings:tts-rate-changed', { rate });
       });
       this.bus.on('ui:tts-voice-set', ({ voiceURI }) => this.settings.set('ttsVoiceURI', voiceURI));
+      this.bus.on('ui:toggle-tts-auto-rate', ({ value }) => this.settings.set('ttsAutoRate', value));
 
       this.bus.on('ui:hotkey-fired', () => this.scrollEngine.suppressUserScrollDetection());
 
