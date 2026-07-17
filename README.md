@@ -11,7 +11,7 @@ sanftem Auto-Scroll des Originaltextes.
 
 1. [Tampermonkey](https://www.tampermonkey.net/) (oder kompatiblen Userscript-
    Manager) installieren.
-2. [`universal-speedreader.user.js`](universal-speedreader.user.js) importieren —
+2. [`universal-speedreader.user.js`](https://raw.githubusercontent.com/hubmey/tm_speedreader/refs/heads/main/universal-speedreader.user.js) importieren —
    entweder im Tampermonkey-Dashboard unter „Neues Skript" den Inhalt einfügen,
    oder die Roh-Datei direkt öffnen (`@updateURL`/`@downloadURL` sorgen für
    automatische Updates).
