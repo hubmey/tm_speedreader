@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Universal SpeedReader
 // @namespace    https://github.com/hubmey/tm_speedreader.git
-// @version      1.27.0
+// @version      1.27.1
 // @description  RSVP/ORP Speedreader für nahezu jede textbasierte Webseite, mit synchronem Auto-Scroll des Originalcontainers.
 // @author       Hubertus Meyer
 // @match        *://*/*
@@ -1204,14 +1204,36 @@
     _loadVoices() { this._voices = window.speechSynthesis.getVoices(); }
     getVoices() { return this._voices; }
 
+    /** Sprache des Dokuments (2-Buchstaben-Code), Basis für Sortierung/Auto-Wahl. */
+    static docLang() {
+      return (document.documentElement.lang || navigator.language || 'de').slice(0, 2).toLowerCase();
+    }
+
+    /** macOS/Chrome liefern für jede Sprache eine niedrig aufgelöste „compact"-Stimme. */
+    static isCompact(v) {
+      return /compact/i.test(v.voiceURI || '');
+    }
+
     /** Kennzeichnet eine Stimme als „Premium" (hochwertige, natürlichere Synthese). */
     static isPremium(v) {
-      return /premium|enhanced|neural|siri|natural|studio|wavenet|journey/i.test(v.name + ' ' + (v.voiceURI || ''));
+      if (ReadAloudEngine.isCompact(v)) return false;
+      const s = v.name + ' ' + (v.voiceURI || '');
+      // Explizite Premium-Marker ODER Netz-Stimmen ODER nicht-„compact" Systemstimmen.
+      return /premium|enhanced|neural|siri|natural|studio|wavenet|journey/i.test(s) ||
+             !v.localService ||
+             /(^|[.\/])(voice|siri)([.\/]|$)/i.test(v.voiceURI || '');
+    }
+
+    /** Qualitätsrang: Premium (2) > normal (1) > compact (0) – für Sortierung. */
+    static quality(v) {
+      if (ReadAloudEngine.isPremium(v)) return 2;
+      if (ReadAloudEngine.isCompact(v)) return 0;
+      return 1;
     }
 
     /**
-     * Wählt die Stimme: explizit gewählte, sonst automatisch die beste – Premium
-     * bevorzugt, danach Netz-Stimmen (oft besser), passend zur Dokumentsprache.
+     * Wählt die Stimme: explizit gewählte, sonst automatisch die beste – nach
+     * Qualität (Premium zuerst) und passend zur Dokumentsprache.
      */
     _resolveVoice() {
       const chosen = this.settings.get('readAloudVoiceURI');
@@ -1220,15 +1242,12 @@
         if (v) return v;
       }
       if (this._voices.length === 0) return null;
-      const docLang = (document.documentElement.lang || navigator.language || 'de').slice(0, 2).toLowerCase();
+      const docLang = ReadAloudEngine.docLang();
       const sameLang = (v) => (v.lang || '').slice(0, 2).toLowerCase() === docLang;
-      const premium = this._voices.filter(ReadAloudEngine.isPremium);
-      return premium.find(sameLang) ||
-             premium[0] ||
-             this._voices.find((v) => sameLang(v) && !v.localService) ||
-             this._voices.find(sameLang) ||
-             this._voices.find((v) => !v.localService) ||
-             this._voices[0];
+      const byQuality = (a, b) => ReadAloudEngine.quality(b) - ReadAloudEngine.quality(a);
+      const same = this._voices.filter(sameLang).sort(byQuality);
+      const rest = this._voices.filter((v) => !sameLang(v)).sort(byQuality);
+      return same[0] || rest[0] || this._voices[0];
     }
 
     load(stream) {
@@ -2451,7 +2470,12 @@
       return wrapper;
     }
 
-    /** Füllt die Stimmenauswahl für den Vorlesemodus (Premium zuerst, dann nach Sprache). */
+    /**
+     * Füllt die Stimmenauswahl: Stimmen der aktuellen Dokumentsprache zuoberst
+     * (in einer eigenen Gruppe, Premium zuerst), danach die übrigen Sprachen.
+     * ✦ = Premium/hochwertig, „(einfach)" = niedrig aufgelöste compact-Stimme,
+     * ☁ = Netz-Stimme.
+     */
     _populateReadVoices() {
       if (!('speechSynthesis' in window)) {
         this.readVoiceSelect.disabled = true;
@@ -2460,17 +2484,28 @@
       }
       const voices = window.speechSynthesis.getVoices();
       const current = this.settings.get('readAloudVoiceURI');
-      const premium = (v) => ReadAloudEngine.isPremium(v);
-      // Premium zuerst, dann alphabetisch nach Sprache/Name.
-      const sorted = [...voices].sort((a, b) =>
-        (premium(b) - premium(a)) || (a.lang || '').localeCompare(b.lang || '') || a.name.localeCompare(b.name));
-      this.readVoiceSelect.replaceChildren(
-        Utils.el('option', { value: '', text: 'Auto (beste Stimme)' }),
-        ...sorted.map((v) => Utils.el('option', {
-          value: v.voiceURI,
-          text: `${v.name} (${v.lang})${premium(v) ? ' ✦' : v.localService ? '' : ' ☁'}`,
-        }))
-      );
+      const docLang = ReadAloudEngine.docLang();
+      const sameLang = (v) => (v.lang || '').slice(0, 2).toLowerCase() === docLang;
+      // Premium zuerst, dann normale, dann compact; innerhalb alphabetisch.
+      const byQualityName = (a, b) =>
+        (ReadAloudEngine.quality(b) - ReadAloudEngine.quality(a)) ||
+        (a.lang || '').localeCompare(b.lang || '') || a.name.localeCompare(b.name);
+      const label = (v) => {
+        const mark = ReadAloudEngine.isPremium(v) ? ' ✦' : ReadAloudEngine.isCompact(v) ? ' (einfach)' : v.localService ? '' : ' ☁';
+        return `${v.name} (${v.lang})${mark}`;
+      };
+      const opt = (v) => Utils.el('option', { value: v.voiceURI, text: label(v) });
+
+      const same = voices.filter(sameLang).sort(byQualityName);
+      const rest = voices.filter((v) => !sameLang(v)).sort(byQualityName);
+      const children = [Utils.el('option', { value: '', text: 'Auto (beste Stimme)' })];
+      if (same.length) {
+        children.push(Utils.el('optgroup', { label: `Aktuelle Sprache (${docLang.toUpperCase()})` }, same.map(opt)));
+      }
+      if (rest.length) {
+        children.push(Utils.el('optgroup', { label: 'Weitere Sprachen' }, rest.map(opt)));
+      }
+      this.readVoiceSelect.replaceChildren(...children);
       this.readVoiceSelect.value = current || '';
     }
 
