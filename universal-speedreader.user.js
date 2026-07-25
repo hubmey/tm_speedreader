@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Universal SpeedReader
 // @namespace    https://github.com/hubmey/tm_speedreader.git
-// @version      1.26.0
+// @version      1.27.0
 // @description  RSVP/ORP Speedreader für nahezu jede textbasierte Webseite, mit synchronem Auto-Scroll des Originalcontainers.
 // @author       Hubertus Meyer
 // @match        *://*/*
@@ -88,6 +88,7 @@
     readAloudRate: 1,         // Sprechgeschwindigkeit der Sprachausgabe (0.5–2), unabhängig von WPM
     minReadAloudRate: 0.5,
     maxReadAloudRate: 2,
+    readAloudVoiceURI: '',    // gewählte Stimme; '' = automatisch beste (Premium bevorzugt)
     displayFontSize: 30,      // Schriftgröße (px) der Wortanzeige
     minFontSize: 14,
     maxFontSize: 72,
@@ -1189,11 +1190,46 @@
       this._state = 'idle';        // 'idle' | 'playing' | 'paused' | 'finished'
       this.onIndex = null;         // Callback(globalTokenIndex)
       this.onStateChange = null;   // Callback(state)
+      this._voices = [];
+      if (this._supported) {
+        this._loadVoices();
+        window.speechSynthesis.addEventListener?.('voiceschanged', () => this._loadVoices());
+      }
     }
 
     isSupported() { return this._supported; }
     get state() { return this._state; }
     get index() { return this._index; }
+
+    _loadVoices() { this._voices = window.speechSynthesis.getVoices(); }
+    getVoices() { return this._voices; }
+
+    /** Kennzeichnet eine Stimme als „Premium" (hochwertige, natürlichere Synthese). */
+    static isPremium(v) {
+      return /premium|enhanced|neural|siri|natural|studio|wavenet|journey/i.test(v.name + ' ' + (v.voiceURI || ''));
+    }
+
+    /**
+     * Wählt die Stimme: explizit gewählte, sonst automatisch die beste – Premium
+     * bevorzugt, danach Netz-Stimmen (oft besser), passend zur Dokumentsprache.
+     */
+    _resolveVoice() {
+      const chosen = this.settings.get('readAloudVoiceURI');
+      if (chosen) {
+        const v = this._voices.find((x) => x.voiceURI === chosen);
+        if (v) return v;
+      }
+      if (this._voices.length === 0) return null;
+      const docLang = (document.documentElement.lang || navigator.language || 'de').slice(0, 2).toLowerCase();
+      const sameLang = (v) => (v.lang || '').slice(0, 2).toLowerCase() === docLang;
+      const premium = this._voices.filter(ReadAloudEngine.isPremium);
+      return premium.find(sameLang) ||
+             premium[0] ||
+             this._voices.find((v) => sameLang(v) && !v.localService) ||
+             this._voices.find(sameLang) ||
+             this._voices.find((v) => !v.localService) ||
+             this._voices[0];
+    }
 
     load(stream) {
       this._stream = stream || [];
@@ -1240,11 +1276,13 @@
       const chunks = this._buildChunks(this._index);
       if (chunks.length === 0) return;
       const rate = Utils.clamp(this.settings.get('readAloudRate') || 1, 0.1, 10);
+      const voice = this._resolveVoice();
 
       chunks.forEach((chunk, ci) => {
         const u = new SpeechSynthesisUtterance(chunk.text);
         u.rate = rate;
-        u.lang = 'de-DE';
+        if (voice) { u.voice = voice; u.lang = voice.lang; }
+        else u.lang = document.documentElement.lang || 'de-DE';
         u.onboundary = (e) => {
           if (e.name && e.name !== 'word') return;
           // Größten Token-Start <= charIndex finden.
@@ -2279,6 +2317,15 @@
         oninput: (e) => this.bus.emit('ui:read-aloud-rate-set', { rate: Number(e.target.value) }),
       });
 
+      this.readVoiceSelect = Utils.el('select', {
+        class: `${NS}-select`, title: 'Stimme/Sprache im Vorlesemodus (Premium bevorzugt)',
+        onchange: (e) => this.bus.emit('ui:read-aloud-voice-set', { voiceURI: e.target.value }),
+      });
+      this._populateReadVoices();
+      if ('speechSynthesis' in window) {
+        window.speechSynthesis.addEventListener?.('voiceschanged', () => this._populateReadVoices());
+      }
+
       this.clickSoundVariantSelect = Utils.el('select', {
         class: `${NS}-select`, title: 'Klangfarbe des Klicktons',
         onchange: (e) => this.bus.emit('ui:click-sound-variant-set', { variant: e.target.value }),
@@ -2350,7 +2397,7 @@
         divider(),
         group('Ton', this.toggleClickSound, this.clickSoundVariantSelect),
         divider(),
-        group('Vorlesen', this.toggleReadAloud),
+        group('Vorlesen', this.toggleReadAloud, this.readVoiceSelect),
         divider(),
         group('Fokus', this.focusModeSelect),
         divider(),
@@ -2402,6 +2449,29 @@
       const wrapper = Utils.el('label', { class: `${NS}-toggle`, title }, [input, dot, document.createTextNode(label)]);
       wrapper._input = input;
       return wrapper;
+    }
+
+    /** Füllt die Stimmenauswahl für den Vorlesemodus (Premium zuerst, dann nach Sprache). */
+    _populateReadVoices() {
+      if (!('speechSynthesis' in window)) {
+        this.readVoiceSelect.disabled = true;
+        this.readVoiceSelect.replaceChildren(Utils.el('option', { value: '', text: 'Sprachausgabe n. verfügbar' }));
+        return;
+      }
+      const voices = window.speechSynthesis.getVoices();
+      const current = this.settings.get('readAloudVoiceURI');
+      const premium = (v) => ReadAloudEngine.isPremium(v);
+      // Premium zuerst, dann alphabetisch nach Sprache/Name.
+      const sorted = [...voices].sort((a, b) =>
+        (premium(b) - premium(a)) || (a.lang || '').localeCompare(b.lang || '') || a.name.localeCompare(b.name));
+      this.readVoiceSelect.replaceChildren(
+        Utils.el('option', { value: '', text: 'Auto (beste Stimme)' }),
+        ...sorted.map((v) => Utils.el('option', {
+          value: v.voiceURI,
+          text: `${v.name} (${v.lang})${premium(v) ? ' ✦' : v.localService ? '' : ' ☁'}`,
+        }))
+      );
+      this.readVoiceSelect.value = current || '';
     }
 
     _handleSeekClick(evt) {
@@ -3249,6 +3319,13 @@
         this.settings.set('readAloudRate', rate);
         this.bus.emit('settings:read-aloud-rate-changed', { rate });
         // Bei laufender Ausgabe sofort mit neuem Tempo ab aktueller Stelle fortsetzen.
+        if (this.settings.get('readAloudMode') && this.readAloud.state === 'playing') {
+          this.readAloud.play(this.reader.index);
+        }
+      });
+      this.bus.on('ui:read-aloud-voice-set', ({ voiceURI }) => {
+        this.settings.set('readAloudVoiceURI', voiceURI);
+        // Neue Stimme sofort übernehmen, falls gerade vorgelesen wird.
         if (this.settings.get('readAloudMode') && this.readAloud.state === 'playing') {
           this.readAloud.play(this.reader.index);
         }
