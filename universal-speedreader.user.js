@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Universal SpeedReader
 // @namespace    https://github.com/hubmey/tm_speedreader.git
-// @version      1.25.0
+// @version      1.27.1
 // @description  RSVP/ORP Speedreader für nahezu jede textbasierte Webseite, mit synchronem Auto-Scroll des Originalcontainers.
 // @author       Hubertus Meyer
 // @match        *://*/*
@@ -84,6 +84,11 @@
     maxPlaceholderPauseMs: 3000,
     clickSoundEnabled: false, // kurzer Klickton bei jedem neuen Wort
     clickSoundVariant: 'click', // 'click' | 'soft' | 'blip' | 'wood' | 'bell' | 'klassik'
+    readAloudMode: false,     // reiner Vorlesemodus: Sprachausgabe steuert das Tempo, WPM wird ignoriert
+    readAloudRate: 1,         // Sprechgeschwindigkeit der Sprachausgabe (0.5–2), unabhängig von WPM
+    minReadAloudRate: 0.5,
+    maxReadAloudRate: 2,
+    readAloudVoiceURI: '',    // gewählte Stimme; '' = automatisch beste (Premium bevorzugt)
     displayFontSize: 30,      // Schriftgröße (px) der Wortanzeige
     minFontSize: 14,
     maxFontSize: 72,
@@ -127,6 +132,7 @@
       // (Y/Z vertauscht) nie durch Drücken der Z-Taste ausgelöst würde.
       fullscreen: 'f',
       superFocus: 'z',
+      toggleSound: 'k',    // Klickton ein/aus (layout-unabhängig via evt.key)
     },
     lastPosition: {}, // { [urlHash]: { tokenIndex, url, title, timestamp } }
   });
@@ -163,6 +169,9 @@
     updown: '<polyline points="7 9 12 4 17 9" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/><polyline points="7 15 12 20 17 15" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>',
     eye: '<path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/><circle cx="12" cy="12" r="3" fill="none" stroke="currentColor" stroke-width="2"/>',
     help: '<circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="2"/><path d="M9.2 9.3a2.8 2.8 0 1 1 3.7 2.65c-.7.27-1.15.9-1.15 1.65v.4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="17.2" r="1.1" fill="currentColor"/>',
+    soundOn: '<path d="M4 9v6h4l5 4V5L8 9H4z" fill="currentColor"/><path d="M16 8.5a4 4 0 0 1 0 7M18.5 6a7 7 0 0 1 0 12" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>',
+    soundOff: '<path d="M4 9v6h4l5 4V5L8 9H4z" fill="currentColor"/><line x1="16" y1="9" x2="21" y2="15" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/><line x1="21" y1="9" x2="16" y2="15" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>',
+    readAloud: '<path d="M4 5.5A2 2 0 0 1 6 4h5v15H6a2 2 0 0 0-2 2V5.5z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M20 5.5A2 2 0 0 0 18 4h-5v15h5a2 2 0 0 1 2 2V5.5z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/>',
   };
 
   /** Erzeugt ein kleines Inline-SVG-Icon aus ICONS[name]. */
@@ -1158,6 +1167,181 @@
     }
   }
 
+  /**
+   * Reiner Vorlesemodus über die Web Speech API. Im Gegensatz zum früheren
+   * (verworfenen) Wort-für-Wort-Ansatz wird hier der GESAMTE Text am Stück an die
+   * Sprachausgabe übergeben (in wenige große, satzweise geschnittene Utterances),
+   * damit die Ausgabe flüssig statt abgehackt klingt. Das `boundary`-Event liefert
+   * die Zeichenposition je gesprochenem Wort – daraus wird der zugehörige Token
+   * bestimmt und per Callback nach außen gemeldet (zum Markieren im Text und in
+   * der Anzeige). Das WPM-Tempo wird ignoriert; es gilt allein `readAloudRate`.
+   */
+  class ReadAloudEngine {
+    // Web-Speech-Engines kappen sehr lange Utterances; daher in handliche Stücke
+    // schneiden – aber pro Stück viele Wörter (nicht pro Wort!), damit es flüssig bleibt.
+    static MAX_CHUNK_CHARS = 240;
+
+    constructor(bus, settings) {
+      this.bus = bus;
+      this.settings = settings;
+      this._supported = 'speechSynthesis' in window;
+      this._stream = [];
+      this._index = 0;
+      this._state = 'idle';        // 'idle' | 'playing' | 'paused' | 'finished'
+      this.onIndex = null;         // Callback(globalTokenIndex)
+      this.onStateChange = null;   // Callback(state)
+      this._voices = [];
+      if (this._supported) {
+        this._loadVoices();
+        window.speechSynthesis.addEventListener?.('voiceschanged', () => this._loadVoices());
+      }
+    }
+
+    isSupported() { return this._supported; }
+    get state() { return this._state; }
+    get index() { return this._index; }
+
+    _loadVoices() { this._voices = window.speechSynthesis.getVoices(); }
+    getVoices() { return this._voices; }
+
+    /** Sprache des Dokuments (2-Buchstaben-Code), Basis für Sortierung/Auto-Wahl. */
+    static docLang() {
+      return (document.documentElement.lang || navigator.language || 'de').slice(0, 2).toLowerCase();
+    }
+
+    /** macOS/Chrome liefern für jede Sprache eine niedrig aufgelöste „compact"-Stimme. */
+    static isCompact(v) {
+      return /compact/i.test(v.voiceURI || '');
+    }
+
+    /** Kennzeichnet eine Stimme als „Premium" (hochwertige, natürlichere Synthese). */
+    static isPremium(v) {
+      if (ReadAloudEngine.isCompact(v)) return false;
+      const s = v.name + ' ' + (v.voiceURI || '');
+      // Explizite Premium-Marker ODER Netz-Stimmen ODER nicht-„compact" Systemstimmen.
+      return /premium|enhanced|neural|siri|natural|studio|wavenet|journey/i.test(s) ||
+             !v.localService ||
+             /(^|[.\/])(voice|siri)([.\/]|$)/i.test(v.voiceURI || '');
+    }
+
+    /** Qualitätsrang: Premium (2) > normal (1) > compact (0) – für Sortierung. */
+    static quality(v) {
+      if (ReadAloudEngine.isPremium(v)) return 2;
+      if (ReadAloudEngine.isCompact(v)) return 0;
+      return 1;
+    }
+
+    /**
+     * Wählt die Stimme: explizit gewählte, sonst automatisch die beste – nach
+     * Qualität (Premium zuerst) und passend zur Dokumentsprache.
+     */
+    _resolveVoice() {
+      const chosen = this.settings.get('readAloudVoiceURI');
+      if (chosen) {
+        const v = this._voices.find((x) => x.voiceURI === chosen);
+        if (v) return v;
+      }
+      if (this._voices.length === 0) return null;
+      const docLang = ReadAloudEngine.docLang();
+      const sameLang = (v) => (v.lang || '').slice(0, 2).toLowerCase() === docLang;
+      const byQuality = (a, b) => ReadAloudEngine.quality(b) - ReadAloudEngine.quality(a);
+      const same = this._voices.filter(sameLang).sort(byQuality);
+      const rest = this._voices.filter((v) => !sameLang(v)).sort(byQuality);
+      return same[0] || rest[0] || this._voices[0];
+    }
+
+    load(stream) {
+      this._stream = stream || [];
+      this._index = 0;
+    }
+
+    _setState(s) {
+      this._state = s;
+      this.onStateChange?.(s);
+    }
+
+    /**
+     * Baut ab `fromIndex` aufeinanderfolgende Utterances: Tokens werden zu Stücken
+     * gepackt (Satzende bevorzugt als Schnittstelle), pro Stück eine Range-Tabelle
+     * (relativer Zeichen-Offset → globaler Token-Index) für das boundary-Mapping.
+     */
+    _buildChunks(fromIndex) {
+      const chunks = [];
+      let i = fromIndex;
+      while (i < this._stream.length) {
+        const starts = [];       // relativer Zeichen-Offset je Token
+        const indices = [];      // globaler Token-Index
+        let text = '';
+        while (i < this._stream.length) {
+          const tok = this._stream[i].token.text;
+          const piece = text.length ? ' ' + tok : tok;
+          if (text.length && text.length + piece.length > ReadAloudEngine.MAX_CHUNK_CHARS) break;
+          starts.push(text.length ? text.length + 1 : 0);
+          indices.push(i);
+          text += piece;
+          i++;
+          // An Satzende früh umbrechen (natürliche Sprechpause, verhindert Überlänge).
+          if (/[.!?…:]$/.test(tok) && text.length > ReadAloudEngine.MAX_CHUNK_CHARS * 0.5) break;
+        }
+        chunks.push({ text, starts, indices });
+      }
+      return chunks;
+    }
+
+    play(fromIndex = this._index) {
+      if (!this._supported || this._stream.length === 0) return;
+      window.speechSynthesis.cancel();
+      this._index = Utils.clamp(fromIndex, 0, this._stream.length - 1);
+      const chunks = this._buildChunks(this._index);
+      if (chunks.length === 0) return;
+      const rate = Utils.clamp(this.settings.get('readAloudRate') || 1, 0.1, 10);
+      const voice = this._resolveVoice();
+
+      chunks.forEach((chunk, ci) => {
+        const u = new SpeechSynthesisUtterance(chunk.text);
+        u.rate = rate;
+        if (voice) { u.voice = voice; u.lang = voice.lang; }
+        else u.lang = document.documentElement.lang || 'de-DE';
+        u.onboundary = (e) => {
+          if (e.name && e.name !== 'word') return;
+          // Größten Token-Start <= charIndex finden.
+          let lo = 0, hi = chunk.starts.length - 1, found = 0;
+          while (lo <= hi) {
+            const mid = (lo + hi) >> 1;
+            if (chunk.starts[mid] <= e.charIndex) { found = mid; lo = mid + 1; } else hi = mid - 1;
+          }
+          this._index = chunk.indices[found];
+          this.onIndex?.(this._index);
+        };
+        if (ci === chunks.length - 1) {
+          u.onend = () => {
+            if (this._state === 'playing') { this._setState('finished'); }
+          };
+        }
+        window.speechSynthesis.speak(u);
+      });
+      this._setState('playing');
+    }
+
+    pause() {
+      if (!this._supported || this._state !== 'playing') return;
+      // Robuster als speechSynthesis.pause(): abbrechen und Position merken,
+      // Fortsetzen startet neu ab dem aktuellen Token.
+      window.speechSynthesis.cancel();
+      this._setState('paused');
+    }
+
+    toggle() {
+      if (this._state === 'playing') this.pause();
+      else this.play(this._index);
+    }
+
+    stop() {
+      if (this._supported) window.speechSynthesis.cancel();
+      this._setState('idle');
+    }
+  }
+
   // ===========================================================================
   // 8. ORP (Optimal Recognition Point)
   // ===========================================================================
@@ -2139,9 +2323,27 @@
       this.toggleTables = this._makeToggle('Tabellen überspr.', 'skipTables', 'ui:toggle-tables');
       this.toggleSourceHighlight = this._makeToggle('Quelltext markieren', 'highlightSourceWord', 'ui:toggle-source-highlight');
       this.toggleListZebra = this._makeToggle('Listen-Streifen', 'listZebraStripes', 'ui:toggle-list-zebra');
-      this.toggleClickSound = this._makeToggle('Klickton', 'clickSoundEnabled', 'ui:toggle-click-sound');
+      this.toggleClickSound = this._makeToggle('Klickton', 'clickSoundEnabled', 'ui:toggle-click-sound', hotkeys.toggleSound);
+      this.toggleReadAloud = this._makeToggle('Vorlesen', 'readAloudMode', 'ui:toggle-read-aloud');
       this.toggleShowStats = this._makeToggle('Zusammenfassung', 'showStatsOnFinish', 'ui:toggle-show-stats');
       this.toggleAutoClose = this._makeToggle('Autom. schließen', 'autoCloseAfterFinish', 'ui:toggle-auto-close');
+
+      this.statReadRate = Utils.el('span', { class: `${NS}-stat`, text: `${s.get('readAloudRate').toFixed(1)}×` });
+      this.readRateSlider = Utils.el('input', {
+        class: `${NS}-slider`, type: 'range',
+        min: s.get('minReadAloudRate'), max: s.get('maxReadAloudRate'), step: 0.1, value: s.get('readAloudRate'),
+        'data-hint': 'Sprechgeschwindigkeit im Vorlesemodus (unabhängig von WPM).',
+        oninput: (e) => this.bus.emit('ui:read-aloud-rate-set', { rate: Number(e.target.value) }),
+      });
+
+      this.readVoiceSelect = Utils.el('select', {
+        class: `${NS}-select`, title: 'Stimme/Sprache im Vorlesemodus (Premium bevorzugt)',
+        onchange: (e) => this.bus.emit('ui:read-aloud-voice-set', { voiceURI: e.target.value }),
+      });
+      this._populateReadVoices();
+      if ('speechSynthesis' in window) {
+        window.speechSynthesis.addEventListener?.('voiceschanged', () => this._populateReadVoices());
+      }
 
       this.clickSoundVariantSelect = Utils.el('select', {
         class: `${NS}-select`, title: 'Klangfarbe des Klicktons',
@@ -2179,6 +2381,13 @@
         onclick: () => this.bus.emit('ui:toggle-help'),
       }, [makeIcon('help')]);
 
+      // Klickton-Schnellschalter unten in der Leiste (zusätzlich zum Kürzel).
+      this.btnSound = Utils.el('button', {
+        class: `${NS}-btn`, title: `Klickton ein/aus (${hotkeyLabel(hotkeys.toggleSound)})`,
+        onclick: () => this.bus.emit('ui:toggle-sound-hotkey'),
+      }, [makeIcon(s.get('clickSoundEnabled') ? 'soundOn' : 'soundOff')]);
+      this.btnSound.classList.toggle('usr-active', s.get('clickSoundEnabled'));
+
       // Kleiner vertikaler Trenner zum optischen Gruppieren.
       const divider = () => Utils.el('div', { class: `${NS}-divider` });
       const group = (label, ...children) => Utils.el('div', { class: `${NS}-group` }, [
@@ -2193,10 +2402,11 @@
         Utils.el('span', { class: `${NS}-stat`, text: 'WPM' }), this.wpmSlider,
         Utils.el('span', { class: `${NS}-stat`, text: 'Schrift' }), this.fontSizeSlider,
         Utils.el('span', { class: `${NS}-stat`, text: 'Pause' }), this.placeholderPauseSlider,
+        Utils.el('span', { class: `${NS}-stat`, text: 'Vorlesetempo' }), this.readRateSlider, this.statReadRate,
         Utils.el('div', { class: `${NS}-spacer` }),
       ]);
 
-      // Zeile 2: Optionen thematisch gruppiert (Anzeige · Tempo · Überspringen · Ton).
+      // Zeile 2: Optionen thematisch gruppiert (Anzeige · Tempo · Überspringen · Ton · Vorlesen).
       const toggleRow = Utils.el('div', { class: `${NS}-row ${NS}-hide-compact` }, [
         group('Anzeige', this.toggleOrp, this.toggleOrpFixed, this.toggleSourceHighlight, this.toggleListZebra),
         divider(),
@@ -2205,6 +2415,8 @@
         group('Überspringen', this.toggleCaptions, this.toggleCitations, this.toggleTables),
         divider(),
         group('Ton', this.toggleClickSound, this.clickSoundVariantSelect),
+        divider(),
+        group('Vorlesen', this.toggleReadAloud, this.readVoiceSelect),
         divider(),
         group('Fokus', this.focusModeSelect),
         divider(),
@@ -2216,7 +2428,7 @@
       const statsRow = Utils.el('div', { class: `${NS}-row ${NS}-statsrow ${NS}-hide-focus` }, [
         this.statChapter, this.statWords, this.statPercent, this.statRemaining, this.statWpm, this.statListLevel, this.statMelody,
         Utils.el('div', { class: `${NS}-spacer` }),
-        this.btnHelp, this.btnSuperFocus, this.btnFullscreen, this.togglePosition, this.btnClose,
+        this.btnSound, this.btnHelp, this.btnSuperFocus, this.btnFullscreen, this.togglePosition, this.btnClose,
       ]);
 
       this.progressTrack.classList.add(`${NS}-hide-focus`);
@@ -2237,7 +2449,8 @@
       ]);
 
       const viewClass = s.get('viewMode') === 'compact' ? ' usr-view-compact' : s.get('viewMode') === 'focus' ? ' usr-view-focus' : '';
-      return Utils.el('div', { class: `${NS}-toolbar ${NS}-ui ${posClass} ${themeClass}${viewClass}` }, [
+      const raClass = s.get('readAloudMode') ? ' usr-read-aloud' : '';
+      return Utils.el('div', { class: `${NS}-toolbar ${NS}-ui ${posClass} ${themeClass}${viewClass}${raClass}` }, [
         this.display, this.progressTrack, controlsRow, toggleRow, statsRow, exitRow,
       ]);
     }
@@ -2255,6 +2468,45 @@
       const wrapper = Utils.el('label', { class: `${NS}-toggle`, title }, [input, dot, document.createTextNode(label)]);
       wrapper._input = input;
       return wrapper;
+    }
+
+    /**
+     * Füllt die Stimmenauswahl: Stimmen der aktuellen Dokumentsprache zuoberst
+     * (in einer eigenen Gruppe, Premium zuerst), danach die übrigen Sprachen.
+     * ✦ = Premium/hochwertig, „(einfach)" = niedrig aufgelöste compact-Stimme,
+     * ☁ = Netz-Stimme.
+     */
+    _populateReadVoices() {
+      if (!('speechSynthesis' in window)) {
+        this.readVoiceSelect.disabled = true;
+        this.readVoiceSelect.replaceChildren(Utils.el('option', { value: '', text: 'Sprachausgabe n. verfügbar' }));
+        return;
+      }
+      const voices = window.speechSynthesis.getVoices();
+      const current = this.settings.get('readAloudVoiceURI');
+      const docLang = ReadAloudEngine.docLang();
+      const sameLang = (v) => (v.lang || '').slice(0, 2).toLowerCase() === docLang;
+      // Premium zuerst, dann normale, dann compact; innerhalb alphabetisch.
+      const byQualityName = (a, b) =>
+        (ReadAloudEngine.quality(b) - ReadAloudEngine.quality(a)) ||
+        (a.lang || '').localeCompare(b.lang || '') || a.name.localeCompare(b.name);
+      const label = (v) => {
+        const mark = ReadAloudEngine.isPremium(v) ? ' ✦' : ReadAloudEngine.isCompact(v) ? ' (einfach)' : v.localService ? '' : ' ☁';
+        return `${v.name} (${v.lang})${mark}`;
+      };
+      const opt = (v) => Utils.el('option', { value: v.voiceURI, text: label(v) });
+
+      const same = voices.filter(sameLang).sort(byQualityName);
+      const rest = voices.filter((v) => !sameLang(v)).sort(byQualityName);
+      const children = [Utils.el('option', { value: '', text: 'Auto (beste Stimme)' })];
+      if (same.length) {
+        children.push(Utils.el('optgroup', { label: `Aktuelle Sprache (${docLang.toUpperCase()})` }, same.map(opt)));
+      }
+      if (rest.length) {
+        children.push(Utils.el('optgroup', { label: 'Weitere Sprachen' }, rest.map(opt)));
+      }
+      this.readVoiceSelect.replaceChildren(...children);
+      this.readVoiceSelect.value = current || '';
     }
 
     _handleSeekClick(evt) {
@@ -2324,6 +2576,17 @@
       });
       this.bus.on('settings:click-sound-changed', ({ value }) => {
         if (!value) this.statMelody.textContent = '';
+        this.toggleClickSound._input.checked = value;
+        this.btnSound.replaceChildren(makeIcon(value ? 'soundOn' : 'soundOff'));
+        this.btnSound.classList.toggle('usr-active', value);
+      });
+      this.bus.on('settings:read-aloud-changed', ({ value }) => {
+        this.toggleReadAloud._input.checked = value;
+        this.element.classList.toggle('usr-read-aloud', value);
+      });
+      this.bus.on('settings:read-aloud-rate-changed', ({ rate }) => {
+        this.readRateSlider.value = rate;
+        this.statReadRate.textContent = `${rate.toFixed(1)}×`;
       });
     }
 
@@ -2460,6 +2723,7 @@
         [`${hotkeyLabel(hk.faster)} / ${hotkeyLabel(hk.slower)}`, 'Schneller / langsamer (WPM)'],
         [hotkeyLabel(hk.fullscreen), 'Vollbild an/aus'],
         [hotkeyLabel(hk.superFocus), 'Ansicht wechseln: Voll → Kompakt → Fokus'],
+        [hotkeyLabel(hk.toggleSound), 'Klickton ein/aus'],
         [hotkeyLabel(hk.close), 'Reader schließen'],
       ];
       const features = [
@@ -2472,6 +2736,7 @@
         ['Quelltext markieren', 'Hebt das aktuelle Wort im Originaltext hervor.'],
         ['Listen-Streifen', 'Farbstreifen + „-" je Listenebene links im Textfeld.'],
         ['Klickton', 'Kurzer Ton je Wort, mit wählbarer Klangfarbe.'],
+        ['Vorlesen', 'Reiner Vorlesemodus: die Sprachausgabe liest den Text am Stück vor (flüssig, nicht abgehackt), markiert die Stelle im Text und ignoriert WPM. Eigenes „Vorlesetempo".'],
         ['Fokus', 'Rest der Seite abdunkeln / verwischen / ausblenden.'],
         ['Ansichten', 'Voll (alles) → Kompakt (Wort + Fortschritt + Infoleiste) → Fokus (nur das Wort).'],
         ['Klassik-Ton', 'Easter-Egg: spielt je Wort eine Note eines gemeinfreien Werks; Titel in der Infoleiste.'],
@@ -2651,6 +2916,10 @@
             evt.preventDefault();
             evt.stopPropagation();
             this.bus.emit('ui:cycle-view');
+          } else if (key && key === hotkeys.toggleSound) {
+            evt.preventDefault();
+            evt.stopPropagation();
+            this.bus.emit('ui:toggle-sound-hotkey');
           } else {
             return;
           }
@@ -2782,6 +3051,14 @@
       this.sourceHighlighter = new SourceHighlighter();
       this.soundEngine = new SoundEngine(this.settings);
       this.soundEngine.onMelodyChange = (name) => this.bus.emit('sound:melody', { name, url: SoundEngine.WIKI[name] || '' });
+      this.readAloud = new ReadAloudEngine(this.bus, this.settings);
+      // Sprachausgabe treibt Position: jedes gesprochene Wort markiert die Stelle
+      // im Text und aktualisiert die Anzeige (über seekToIndex → reader:token).
+      this.readAloud.onIndex = (i) => this.reader.seekToIndex(i);
+      this.readAloud.onStateChange = (s) => {
+        const map = { playing: ReaderState.PLAYING, paused: ReaderState.PAUSED, idle: ReaderState.STOPPED, finished: ReaderState.FINISHED };
+        this.bus.emit('reader:state', { state: map[s] || ReaderState.STOPPED });
+      };
 
       this.container = null;
       this.toolbar = null;
@@ -2823,6 +3100,7 @@
           return;
         }
         this.reader.loadBlocks(blocks);
+        this.readAloud.load(this.reader.stream);
         this.scrollEngine.attach(container);
         this.scrollEngine.watchUserScroll(() => this.reader.pause());
         // Container-Auswahl ist eine Nutzergeste – hier den AudioContext vorwärmen,
@@ -2936,6 +3214,7 @@
       const scrollRatio = this.reader.totalWords ? this.reader.index / this.reader.totalWords : 0;
       const blocks = this.domParser.parse(this.container);
       this.reader.loadBlocks(blocks);
+      this.readAloud.load(this.reader.stream);
       this.reader.seekToIndex(Math.floor(scrollRatio * this.reader.totalWords));
     }
 
@@ -2965,9 +3244,22 @@
       }
     }
 
+    /**
+     * Führt eine Positions-Bewegung (vor/zurück/Kapitel/Seek) einheitlich aus:
+     * pausiert den RSVP-Reader, bewegt die Position, und setzt im Vorlesemodus
+     * die Sprachausgabe an der neuen Stelle fort, falls sie gerade lief.
+     */
+    _navigate(move) {
+      const wasReading = this.settings.get('readAloudMode') && this.readAloud.state === 'playing';
+      this.reader.pause();
+      move();
+      if (wasReading) this.readAloud.play(this.reader.index);
+    }
+
     _teardownSession() {
       if (document.fullscreenElement) document.exitFullscreen?.();
       this.reader.stop();
+      this.readAloud.stop();
       this.scrollEngine.stop();
       this.scrollEngine.unwatchUserScroll();
       this.keyboard.disable();
@@ -2986,22 +3278,27 @@
 
     _bindBusHandlers() {
       this.bus.on('ui:toggle', () => {
+        if (this.settings.get('readAloudMode')) {
+          // Im Vorlesemodus steuert die Sprachausgabe; immer ab der aktuellen Stelle.
+          if (this.readAloud.state === 'playing') this.readAloud.pause();
+          else { this.readAloud.play(this.reader.index); this._resyncScroll(); }
+          return;
+        }
         this.reader.togglePause();
         // Nach manuellem Scrollen (das den Reader pausiert hat) beim Fortsetzen
         // wieder zur korrekten Leseposition zurückscrollen.
         if (this.reader.state === ReaderState.PLAYING) this._resyncScroll();
       });
-      this.bus.on('ui:stop', () => { this.reader.stop(); this._persistPosition(); });
-      this.bus.on('ui:next', () => { this.reader.pause(); this.reader.next(); });
-      this.bus.on('ui:prev', () => { this.reader.pause(); this.reader.prev(); });
-      this.bus.on('ui:next-chapter', () => { this.reader.pause(); this.reader.nextChapter(); });
-      this.bus.on('ui:prev-chapter', () => { this.reader.pause(); this.reader.prevChapter(); });
+      this.bus.on('ui:stop', () => { this.reader.stop(); this.readAloud.stop(); this._persistPosition(); });
+      this.bus.on('ui:next', () => this._navigate(() => this.reader.next()));
+      this.bus.on('ui:prev', () => this._navigate(() => this.reader.prev()));
+      this.bus.on('ui:next-chapter', () => this._navigate(() => this.reader.nextChapter()));
+      this.bus.on('ui:prev-chapter', () => this._navigate(() => this.reader.prevChapter()));
       this.bus.on('ui:wpm-set', ({ wpm }) => { this.settings.set('wpm', wpm); this.bus.emit('reader:wpm', { wpm }); });
       this.bus.on('ui:wpm-delta', ({ delta }) => this.reader.changeSpeed(delta));
 
       this.bus.on('ui:seek-ratio', ({ ratio }) => {
-        this.reader.pause();
-        this.reader.seekToIndex(Math.floor(ratio * this.reader.totalWords));
+        this._navigate(() => this.reader.seekToIndex(Math.floor(ratio * this.reader.totalWords)));
       });
 
       this.bus.on('ui:toggle-orp', ({ value }) => { this.settings.set('orpEnabled', value); this.bus.emit('settings:orp-changed', { value }); });
@@ -3037,6 +3334,36 @@
         this.settings.set('clickSoundEnabled', value);
         if (value) this.soundEngine.warmUp();
         this.bus.emit('settings:click-sound-changed', { value });
+      });
+
+      this.bus.on('ui:toggle-sound-hotkey', () => {
+        const v = !this.settings.get('clickSoundEnabled');
+        this.settings.set('clickSoundEnabled', v);
+        if (v) this.soundEngine.warmUp();
+        this.bus.emit('settings:click-sound-changed', { value: v });
+      });
+
+      this.bus.on('ui:toggle-read-aloud', ({ value }) => {
+        this.settings.set('readAloudMode', value);
+        // Beim Umschalten laufende Wiedergabe/Sprachausgabe stoppen (sauberer Moduswechsel).
+        this.reader.pause();
+        this.readAloud.stop();
+        this.bus.emit('settings:read-aloud-changed', { value });
+      });
+      this.bus.on('ui:read-aloud-rate-set', ({ rate }) => {
+        this.settings.set('readAloudRate', rate);
+        this.bus.emit('settings:read-aloud-rate-changed', { rate });
+        // Bei laufender Ausgabe sofort mit neuem Tempo ab aktueller Stelle fortsetzen.
+        if (this.settings.get('readAloudMode') && this.readAloud.state === 'playing') {
+          this.readAloud.play(this.reader.index);
+        }
+      });
+      this.bus.on('ui:read-aloud-voice-set', ({ voiceURI }) => {
+        this.settings.set('readAloudVoiceURI', voiceURI);
+        // Neue Stimme sofort übernehmen, falls gerade vorgelesen wird.
+        if (this.settings.get('readAloudMode') && this.readAloud.state === 'playing') {
+          this.readAloud.play(this.reader.index);
+        }
       });
 
       this.bus.on('ui:focus-mode-set', ({ mode }) => {
@@ -3102,7 +3429,8 @@
         } else {
           this.sourceHighlighter.clear();
         }
-        this.soundEngine.playTick();
+        // Im Vorlesemodus keinen Klickton zusätzlich zur Sprachausgabe.
+        if (!this.settings.get('readAloudMode')) this.soundEngine.playTick();
       });
 
       this.bus.on('reader:finished', (stats) => {
