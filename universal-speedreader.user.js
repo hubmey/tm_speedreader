@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Universal SpeedReader
 // @namespace    https://github.com/hubmey/tm_speedreader.git
-// @version      1.29.1
+// @version      1.30.0
 // @description  RSVP/ORP Speedreader für nahezu jede textbasierte Webseite, mit synchronem Auto-Scroll des Originalcontainers.
 // @author       Hubertus Meyer
 // @match        *://*/*
@@ -3176,17 +3176,21 @@
     }
 
     _currentTokenSnapshot() {
-      // Initiales Rendern des ersten Wortes ohne Zeitfortschritt zu triggern.
-      const entry = this.reader.stream[0];
+      // Initiales Rendern der AKTUELLEN Position (nach evtl. Wiederherstellung),
+      // ohne Zeitfortschritt zu triggern.
+      const idx = this.reader.index;
+      const total = this.reader.totalWords;
+      const entry = this.reader.stream[idx];
+      const remainingWords = total - idx;
       return {
         token: entry?.token || { text: '', punctuation: null, isNumber: false, letterCount: 0 },
         block: entry?.block || null,
         localIndex: entry?.localIndex ?? 0,
-        index: 0,
-        total: this.reader.totalWords,
-        progress: 0,
-        remainingSeconds: (this.reader.totalWords * 60) / this.reader.currentWpm,
-        chapter: this.reader.chapters[0] || null,
+        index: idx,
+        total,
+        progress: total ? idx / total : 0,
+        remainingSeconds: (remainingWords * 60) / this.reader.currentWpm,
+        chapter: this.reader.chapters[this.reader._currentChapterIndex?.() ?? 0] || null,
       };
     }
 
@@ -3270,11 +3274,24 @@
       this.reader.seekToIndex(Math.floor(scrollRatio * this.reader.totalWords));
     }
 
+    /** Fingerabdruck des aktuellen Containers (Wortzahl + erstes/letztes Wort),
+     *  um beim Fortsetzen sicherzustellen, dass es DERSELBE Inhalt ist. */
+    _containerSignature() {
+      const s = this.reader.stream;
+      if (!s.length) return '';
+      return `${s.length}|${s[0].token.text}|${s[s.length - 1].token.text}`;
+    }
+
     _restoreLastPosition() {
       const key = Utils.hashString(location.href + document.title);
       const saved = this.settings.getLastPosition(key);
-      if (saved && saved.tokenIndex < this.reader.totalWords) {
+      this._containerSig = this._containerSignature();
+      // Position nur fortsetzen, wenn derselbe Container wie zuletzt gewählt wurde;
+      // ein anderer Block auf derselben Seite startet wieder am Anfang.
+      if (saved && saved.sig === this._containerSig && saved.tokenIndex < this.reader.totalWords) {
         this.reader.seekToIndex(saved.tokenIndex);
+      } else {
+        this.reader.seekToIndex(0);
       }
       this._positionKey = key;
     }
@@ -3283,6 +3300,7 @@
       if (!this._positionKey) return;
       this.settings.saveLastPosition(this._positionKey, {
         tokenIndex: this.reader.index,
+        sig: this._containerSig,
         url: location.href,
         title: document.title,
       });
