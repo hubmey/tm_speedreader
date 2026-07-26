@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Universal SpeedReader
 // @namespace    https://github.com/hubmey/tm_speedreader.git
-// @version      1.29.0
+// @version      1.29.1
 // @description  RSVP/ORP Speedreader für nahezu jede textbasierte Webseite, mit synchronem Auto-Scroll des Originalcontainers.
 // @author       Hubertus Meyer
 // @match        *://*/*
@@ -2472,16 +2472,20 @@
       // Im Superfokus ist Zeile 3 ausgeblendet – deshalb eine schlanke, immer sichtbare
       // Aktionszeile, damit man den Modus/Reader jederzeit verlassen kann.
       this.btnSuperFocusExit = Utils.el('button', {
-        class: `${NS}-btn`, title: `Fokus beenden → volle Ansicht (${hotkeyLabel(hotkeys.superFocus)})`,
+        class: `${NS}-btn`, title: 'Volle Ansicht',
         onclick: () => this.bus.emit('ui:set-view', { mode: 'full' }),
       }, [makeIcon('gear')]);
+      this.btnCompactExit = Utils.el('button', {
+        class: `${NS}-btn`, title: 'Kompakt (Wort + Fortschritt + Infoleiste)',
+        onclick: () => this.bus.emit('ui:set-view', { mode: 'compact' }),
+      }, [makeIcon('viewCompact')]);
       this.btnCloseExit = Utils.el('button', {
         class: `${NS}-btn`, title: `Schließen (${hotkeyLabel(hotkeys.close)})`,
         onclick: () => this.bus.emit('ui:close'),
       }, [makeIcon('close')]);
       const exitRow = Utils.el('div', { class: `${NS}-row ${NS}-exit-row` }, [
         Utils.el('div', { class: `${NS}-spacer` }),
-        this.btnSuperFocusExit, this.btnCloseExit,
+        this.btnSuperFocusExit, this.btnCompactExit, this.btnCloseExit,
       ]);
 
       const viewClass = s.get('viewMode') === 'compact' ? ' usr-view-compact' : s.get('viewMode') === 'focus' ? ' usr-view-focus' : '';
@@ -3096,6 +3100,16 @@
       this.readAloud.onStateChange = (s) => {
         const map = { playing: ReaderState.PLAYING, paused: ReaderState.PAUSED, idle: ReaderState.STOPPED, finished: ReaderState.FINISHED };
         this.bus.emit('reader:state', { state: map[s] || ReaderState.STOPPED });
+        // Am Ende des Vorlesens denselben Abschluss (Statistik/Auto-Schließen)
+        // auslösen wie beim RSVP-Reader – der emittiert dafür sonst reader:finished.
+        if (s === 'finished') {
+          this.bus.emit('reader:finished', {
+            totalTimeSeconds: 0, averageWpm: 0, effectiveWpm: 0,
+            wordCount: this.reader.totalWords,
+            imageCount: 0, tableCount: 0, codeBlockCount: 0, timeSavedSeconds: 0,
+            readAloud: true,
+          });
+        }
       };
 
       this.container = null;
