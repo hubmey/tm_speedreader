@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Universal SpeedReader
 // @namespace    https://github.com/hubmey/tm_speedreader.git
-// @version      1.27.1
+// @version      1.28.0
 // @description  RSVP/ORP Speedreader für nahezu jede textbasierte Webseite, mit synchronem Auto-Scroll des Originalcontainers.
 // @author       Hubertus Meyer
 // @match        *://*/*
@@ -2388,6 +2388,13 @@
       }, [makeIcon(s.get('clickSoundEnabled') ? 'soundOn' : 'soundOff')]);
       this.btnSound.classList.toggle('usr-active', s.get('clickSoundEnabled'));
 
+      // Schnellschalter für den Vorlesemodus (Sprachausgabe) unten in der Leiste.
+      this.btnReadAloud = Utils.el('button', {
+        class: `${NS}-btn`, title: 'Vorlesen (Sprachausgabe) ein/aus',
+        onclick: () => this.bus.emit('ui:toggle-read-aloud', { value: !this.settings.get('readAloudMode') }),
+      }, [makeIcon('readAloud')]);
+      this.btnReadAloud.classList.toggle('usr-active', s.get('readAloudMode'));
+
       // Kleiner vertikaler Trenner zum optischen Gruppieren.
       const divider = () => Utils.el('div', { class: `${NS}-divider` });
       const group = (label, ...children) => Utils.el('div', { class: `${NS}-group` }, [
@@ -2428,7 +2435,7 @@
       const statsRow = Utils.el('div', { class: `${NS}-row ${NS}-statsrow ${NS}-hide-focus` }, [
         this.statChapter, this.statWords, this.statPercent, this.statRemaining, this.statWpm, this.statListLevel, this.statMelody,
         Utils.el('div', { class: `${NS}-spacer` }),
-        this.btnSound, this.btnHelp, this.btnSuperFocus, this.btnFullscreen, this.togglePosition, this.btnClose,
+        this.btnReadAloud, this.btnSound, this.btnHelp, this.btnSuperFocus, this.btnFullscreen, this.togglePosition, this.btnClose,
       ]);
 
       this.progressTrack.classList.add(`${NS}-hide-focus`);
@@ -2582,6 +2589,7 @@
       });
       this.bus.on('settings:read-aloud-changed', ({ value }) => {
         this.toggleReadAloud._input.checked = value;
+        this.btnReadAloud.classList.toggle('usr-active', value);
         this.element.classList.toggle('usr-read-aloud', value);
       });
       this.bus.on('settings:read-aloud-rate-changed', ({ rate }) => {
