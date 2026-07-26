@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Universal SpeedReader
 // @namespace    https://github.com/hubmey/tm_speedreader.git
-// @version      1.28.0
+// @version      1.29.0
 // @description  RSVP/ORP Speedreader für nahezu jede textbasierte Webseite, mit synchronem Auto-Scroll des Originalcontainers.
 // @author       Hubertus Meyer
 // @match        *://*/*
@@ -172,6 +172,9 @@
     soundOn: '<path d="M4 9v6h4l5 4V5L8 9H4z" fill="currentColor"/><path d="M16 8.5a4 4 0 0 1 0 7M18.5 6a7 7 0 0 1 0 12" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>',
     soundOff: '<path d="M4 9v6h4l5 4V5L8 9H4z" fill="currentColor"/><line x1="16" y1="9" x2="21" y2="15" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/><line x1="21" y1="9" x2="16" y2="15" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>',
     readAloud: '<path d="M4 5.5A2 2 0 0 1 6 4h5v15H6a2 2 0 0 0-2 2V5.5z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M20 5.5A2 2 0 0 0 18 4h-5v15h5a2 2 0 0 1 2 2V5.5z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/>',
+    gear: '<circle cx="12" cy="12" r="3.2" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M12 2.5v2.4M12 19.1v2.4M4.2 4.2l1.7 1.7M18.1 18.1l1.7 1.7M2.5 12h2.4M19.1 12h2.4M4.2 19.8l1.7-1.7M18.1 5.9l1.7-1.7" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>',
+    viewCompact: '<rect x="3.5" y="4" width="17" height="6" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M6 14h12M6 17.5h8" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>',
+    viewFocus: '<rect x="3.5" y="9.5" width="17" height="5" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.8"/>',
   };
 
   /** Erzeugt ein kleines Inline-SVG-Icon aus ICONS[name]. */
@@ -1600,6 +1603,8 @@
    * akkumuliert – robust gegenüber Drosselung im Hintergrund-Tab.
    */
   class ReaderEngine {
+    static READ_ALOUD_WPM = 150; // ungefähre Sprech-Wörter/Minute bei Tempo 1 (für Restzeit im Vorlesemodus)
+
     constructor(eventBus, settings, speedModel) {
       this.bus = eventBus;
       this.settings = settings;
@@ -1805,7 +1810,12 @@
       const entry = this.stream[this.index];
       if (!entry) return;
       const remainingWords = this.stream.length - this.index;
-      const remainingSeconds = (remainingWords * 60) / this.currentWpm;
+      // Im Vorlesemodus richtet sich die Restzeit nach der Sprechgeschwindigkeit
+      // (ca. 150 Wörter/Minute bei Tempo 1) statt nach der WPM-Einstellung.
+      const effectiveWpm = this.settings.get('readAloudMode')
+        ? ReaderEngine.READ_ALOUD_WPM * (this.settings.get('readAloudRate') || 1)
+        : this.currentWpm;
+      const remainingSeconds = (remainingWords * 60) / Math.max(1, effectiveWpm);
       const chapterIdx = this._currentChapterIndex();
 
       this.bus.emit('reader:token', {
@@ -2014,6 +2024,10 @@
       /* Infoleiste nie umbrechen; der (potenziell lange) Melodietitel wird bei
          Platzmangel gekürzt (…), statt die Leiste auf zwei Zeilen zu drücken. */
       .${NS}-statsrow { font-variant-numeric: tabular-nums; flex-wrap: nowrap; }
+      /* Vorlesemodus: WPM ausblenden (Restzeit richtet sich dann nach Sprechtempo),
+         Vorlesetempo nur dann zeigen. */
+      .${NS}-toolbar.usr-read-aloud .${NS}-wpm-only { display: none; }
+      .${NS}-toolbar:not(.usr-read-aloud) .${NS}-ra-only { display: none; }
       .${NS}-stat-melody { min-width: 0; flex: 0 1 auto; overflow: hidden; }
       .${NS}-melody-link {
         display: inline-block; max-width: 100%; overflow: hidden;
@@ -2249,7 +2263,7 @@
       this.statWords = Utils.el('span', { class: `${NS}-stat`, text: '0 / 0' });
       this.statPercent = Utils.el('span', { class: `${NS}-stat`, text: '0%' });
       this.statRemaining = Utils.el('span', { class: `${NS}-stat`, text: '--:--' });
-      this.statWpm = Utils.el('span', { class: `${NS}-stat`, text: `${s.get('wpm')} WPM` });
+      this.statWpm = Utils.el('span', { class: `${NS}-stat ${NS}-wpm-only`, text: `${s.get('wpm')} WPM` });
       this.statListLevel = Utils.el('span', { class: `${NS}-stat`, title: 'Verschachtelungstiefe der aktuellen Liste' });
       this.statMelody = Utils.el('span', { class: `${NS}-stat ${NS}-stat-melody` });
 
@@ -2283,7 +2297,7 @@
       }, [makeIcon('close')]);
 
       this.wpmSlider = Utils.el('input', {
-        class: `${NS}-slider`, type: 'range', min: s.get('minWpm'), max: s.get('maxWpm'), value: s.get('wpm'),
+        class: `${NS}-slider ${NS}-wpm-only`, type: 'range', min: s.get('minWpm'), max: s.get('maxWpm'), value: s.get('wpm'),
         oninput: (e) => this.bus.emit('ui:wpm-set', { wpm: Number(e.target.value) }),
       });
 
@@ -2328,9 +2342,9 @@
       this.toggleShowStats = this._makeToggle('Zusammenfassung', 'showStatsOnFinish', 'ui:toggle-show-stats');
       this.toggleAutoClose = this._makeToggle('Autom. schließen', 'autoCloseAfterFinish', 'ui:toggle-auto-close');
 
-      this.statReadRate = Utils.el('span', { class: `${NS}-stat`, text: `${s.get('readAloudRate').toFixed(1)}×` });
+      this.statReadRate = Utils.el('span', { class: `${NS}-stat ${NS}-ra-only`, text: `${s.get('readAloudRate').toFixed(1)}×` });
       this.readRateSlider = Utils.el('input', {
-        class: `${NS}-slider`, type: 'range',
+        class: `${NS}-slider ${NS}-ra-only`, type: 'range',
         min: s.get('minReadAloudRate'), max: s.get('maxReadAloudRate'), step: 0.1, value: s.get('readAloudRate'),
         'data-hint': 'Sprechgeschwindigkeit im Vorlesemodus (unabhängig von WPM).',
         oninput: (e) => this.bus.emit('ui:read-aloud-rate-set', { rate: Number(e.target.value) }),
@@ -2370,11 +2384,24 @@
         onclick: () => this.bus.emit('ui:toggle-fullscreen'),
       }, [makeIcon('maximize')]);
 
-      this.btnSuperFocus = Utils.el('button', {
-        class: `${NS}-btn`, title: `Ansicht wechseln: Voll → Kompakt → Fokus (${hotkeyLabel(hotkeys.superFocus)})`,
-        onclick: () => this.bus.emit('ui:cycle-view'),
-      }, [makeIcon('eye')]);
-      this.btnSuperFocus.classList.toggle('usr-active', s.get('viewMode') !== 'full');
+      // Drei explizite Ansichts-Buttons statt eines rotierenden Buttons:
+      // Zahnrad = Voll (alle Optionen), Verkleinern = Kompakt, Minimieren = Fokus.
+      const mode = s.get('viewMode');
+      this.btnViewFull = Utils.el('button', {
+        class: `${NS}-btn`, title: 'Volle Ansicht (alle Einstellungen)',
+        onclick: () => this.bus.emit('ui:set-view', { mode: 'full' }),
+      }, [makeIcon('gear')]);
+      this.btnViewFull.classList.toggle('usr-active', mode === 'full');
+      this.btnViewCompact = Utils.el('button', {
+        class: `${NS}-btn`, title: 'Kompakt (Wort + Fortschritt + Infoleiste)',
+        onclick: () => this.bus.emit('ui:set-view', { mode: 'compact' }),
+      }, [makeIcon('viewCompact')]);
+      this.btnViewCompact.classList.toggle('usr-active', mode === 'compact');
+      this.btnViewFocus = Utils.el('button', {
+        class: `${NS}-btn`, title: `Fokus – nur das Wort (${hotkeyLabel(hotkeys.superFocus)})`,
+        onclick: () => this.bus.emit('ui:set-view', { mode: 'focus' }),
+      }, [makeIcon('viewFocus')]);
+      this.btnViewFocus.classList.toggle('usr-active', mode === 'focus');
 
       this.btnHelp = Utils.el('button', {
         class: `${NS}-btn`, title: 'Hilfe – Funktionen & Tastenkürzel',
@@ -2406,10 +2433,10 @@
       const controlsRow = Utils.el('div', { class: `${NS}-row ${NS}-hide-compact` }, [
         this.btnPrevChapter, this.btnPrev, this.btnStart, this.btnNext, this.btnNextChapter,
         divider(),
-        Utils.el('span', { class: `${NS}-stat`, text: 'WPM' }), this.wpmSlider,
+        Utils.el('span', { class: `${NS}-stat ${NS}-wpm-only`, text: 'WPM' }), this.wpmSlider,
         Utils.el('span', { class: `${NS}-stat`, text: 'Schrift' }), this.fontSizeSlider,
         Utils.el('span', { class: `${NS}-stat`, text: 'Pause' }), this.placeholderPauseSlider,
-        Utils.el('span', { class: `${NS}-stat`, text: 'Vorlesetempo' }), this.readRateSlider, this.statReadRate,
+        Utils.el('span', { class: `${NS}-stat ${NS}-ra-only`, text: 'Vorlesetempo' }), this.readRateSlider, this.statReadRate,
         Utils.el('div', { class: `${NS}-spacer` }),
       ]);
 
@@ -2435,7 +2462,9 @@
       const statsRow = Utils.el('div', { class: `${NS}-row ${NS}-statsrow ${NS}-hide-focus` }, [
         this.statChapter, this.statWords, this.statPercent, this.statRemaining, this.statWpm, this.statListLevel, this.statMelody,
         Utils.el('div', { class: `${NS}-spacer` }),
-        this.btnReadAloud, this.btnSound, this.btnHelp, this.btnSuperFocus, this.btnFullscreen, this.togglePosition, this.btnClose,
+        this.btnReadAloud, this.btnSound, this.btnHelp,
+        this.btnViewFull, this.btnViewCompact, this.btnViewFocus,
+        this.btnFullscreen, this.togglePosition, this.btnClose,
       ]);
 
       this.progressTrack.classList.add(`${NS}-hide-focus`);
@@ -2443,9 +2472,9 @@
       // Im Superfokus ist Zeile 3 ausgeblendet – deshalb eine schlanke, immer sichtbare
       // Aktionszeile, damit man den Modus/Reader jederzeit verlassen kann.
       this.btnSuperFocusExit = Utils.el('button', {
-        class: `${NS}-btn`, title: `Ansicht wechseln (${hotkeyLabel(hotkeys.superFocus)})`,
-        onclick: () => this.bus.emit('ui:cycle-view'),
-      }, [makeIcon('eye')]);
+        class: `${NS}-btn`, title: `Fokus beenden → volle Ansicht (${hotkeyLabel(hotkeys.superFocus)})`,
+        onclick: () => this.bus.emit('ui:set-view', { mode: 'full' }),
+      }, [makeIcon('gear')]);
       this.btnCloseExit = Utils.el('button', {
         class: `${NS}-btn`, title: `Schließen (${hotkeyLabel(hotkeys.close)})`,
         onclick: () => this.bus.emit('ui:close'),
@@ -2560,8 +2589,9 @@
       this.bus.on('settings:view-changed', ({ mode }) => {
         this.element.classList.toggle('usr-view-compact', mode === 'compact');
         this.element.classList.toggle('usr-view-focus', mode === 'focus');
-        this.btnSuperFocus.classList.toggle('usr-active', mode !== 'full');
-        this.btnSuperFocusExit.classList.toggle('usr-active', mode !== 'full');
+        this.btnViewFull.classList.toggle('usr-active', mode === 'full');
+        this.btnViewCompact.classList.toggle('usr-active', mode === 'compact');
+        this.btnViewFocus.classList.toggle('usr-active', mode === 'focus');
       });
       this.bus.on('settings:click-sound-variant-changed', ({ variant }) => {
         this.clickSoundVariantSelect.value = variant;
@@ -3409,6 +3439,10 @@
         const next = order[(cur + 1) % order.length];
         this.settings.set('viewMode', next);
         this.bus.emit('settings:view-changed', { mode: next });
+      });
+      this.bus.on('ui:set-view', ({ mode }) => {
+        this.settings.set('viewMode', mode);
+        this.bus.emit('settings:view-changed', { mode });
       });
 
       this.bus.on('ui:toggle-help', () => HelpPanel.toggle(this.settings, this.settings.get('theme')));
